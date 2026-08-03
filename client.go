@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	PackageVersion            = "0.2.2"
+	PackageVersion            = "0.2.3"
 	SDKEventSchemaVersion     = "cloptima.llm.event.v1"
 	SDKBatchSchemaVersion     = "cloptima.llm.batch.v1"
 	DefaultAPIBaseURL         = "https://api.cloptima.ai"
@@ -81,9 +81,17 @@ type Attribution struct {
 	EndCustomerID   string
 	TenantID        string
 	Release         string
-	Environment     string
-	ActorID         string
-	ActorType       string
+	Environment                  string
+	ActorID                      string
+	ActorType                    string
+	BusinessTransactionID        string
+	BusinessTransactionType      string
+	BusinessTransactionUnitCount *float64
+	BusinessOutcomeStatus        string
+	BusinessOutcomeSuccess       *bool
+	BusinessValueCents           *int
+	BusinessOwner                string
+	WorkflowStep                 string
 }
 
 type AgentContext struct {
@@ -1085,9 +1093,17 @@ func buildEventPayload(
 		"vendor_reported_cost_usd": cleanCostValue(event.VendorReportedCostUSD),
 		"started_at":               timePtrToAny(event.StartedAt),
 		"completed_at":             timePtrToAny(event.CompletedAt),
-		"latency_ms":               intPtrToAny(cleanNonNegativeIntPtr(event.LatencyMS)),
-		"error_message":            emptyToNil(strings.TrimSpace(event.ErrorMessage)),
-		"metadata":                 sanitized,
+		"latency_ms":                      intPtrToAny(cleanNonNegativeIntPtr(event.LatencyMS)),
+		"error_message":                   emptyToNil(strings.TrimSpace(event.ErrorMessage)),
+		"business_transaction_id":         emptyToNil(mergedAttribution.BusinessTransactionID),
+		"business_transaction_type":       emptyToNil(mergedAttribution.BusinessTransactionType),
+		"business_transaction_unit_count": floatPtrToAny(mergedAttribution.BusinessTransactionUnitCount),
+		"business_outcome_status":         emptyToNil(mergedAttribution.BusinessOutcomeStatus),
+		"business_outcome_success":        boolPtrToAny(mergedAttribution.BusinessOutcomeSuccess),
+		"business_value_cents":            intPtrToAny(mergedAttribution.BusinessValueCents),
+		"business_owner":                  emptyToNil(mergedAttribution.BusinessOwner),
+		"workflow_step":                   emptyToNil(mergedAttribution.WorkflowStep),
+		"metadata":                        sanitized,
 	}
 	return stripNilValues(payload), nil
 }
@@ -1368,6 +1384,30 @@ func mergeAttribution(base Attribution, overlay Attribution) Attribution {
 	}
 	if overlay.ActorType != "" {
 		merged.ActorType = overlay.ActorType
+	}
+	if overlay.BusinessTransactionID != "" {
+		merged.BusinessTransactionID = overlay.BusinessTransactionID
+	}
+	if overlay.BusinessTransactionType != "" {
+		merged.BusinessTransactionType = overlay.BusinessTransactionType
+	}
+	if overlay.BusinessTransactionUnitCount != nil {
+		merged.BusinessTransactionUnitCount = overlay.BusinessTransactionUnitCount
+	}
+	if overlay.BusinessOutcomeStatus != "" {
+		merged.BusinessOutcomeStatus = overlay.BusinessOutcomeStatus
+	}
+	if overlay.BusinessOutcomeSuccess != nil {
+		merged.BusinessOutcomeSuccess = overlay.BusinessOutcomeSuccess
+	}
+	if overlay.BusinessValueCents != nil {
+		merged.BusinessValueCents = overlay.BusinessValueCents
+	}
+	if overlay.BusinessOwner != "" {
+		merged.BusinessOwner = overlay.BusinessOwner
+	}
+	if overlay.WorkflowStep != "" {
+		merged.WorkflowStep = overlay.WorkflowStep
 	}
 	return merged
 }
@@ -1966,6 +2006,13 @@ func boolPtrToAny(value *bool) any {
 }
 
 func intPtrToAny(value *int) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+func floatPtrToAny(value *float64) any {
 	if value == nil {
 		return nil
 	}

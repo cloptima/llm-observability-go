@@ -462,6 +462,54 @@ func TestMetadataPrivacyRedactsPrompt(t *testing.T) {
 	}
 }
 
+func TestBusinessTransactionTransmission(t *testing.T) {
+	unitCount := float64(42.5)
+	valueCents := int(150)
+	payload, err := PreviewEventPayload(UsageEvent{
+		Provider: "openai",
+		Model:    "gpt-4.1-mini",
+		Attribution: Attribution{
+			BusinessTransactionID:        "bt-id-1",
+			BusinessTransactionType:      "bt-type-1",
+			BusinessTransactionUnitCount: &unitCount,
+			BusinessOutcomeStatus:        "success",
+			BusinessValueCents:           &valueCents,
+			BusinessOwner:                "accounting",
+			WorkflowStep:                 "pricing-calculation",
+		},
+	}, PreviewOptions{
+		DefaultAttribution: Attribution{
+			AppID:       "agent-api",
+			Environment: "dev",
+		},
+	})
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+
+	if payload["business_transaction_id"] != "bt-id-1" {
+		t.Fatalf("expected business_transaction_id to be bt-id-1, got %v", payload["business_transaction_id"])
+	}
+	if payload["business_transaction_type"] != "bt-type-1" {
+		t.Fatalf("expected business_transaction_type to be bt-type-1, got %v", payload["business_transaction_type"])
+	}
+	if payload["business_transaction_unit_count"] != 42.5 {
+		t.Fatalf("expected business_transaction_unit_count to be 42.5, got %v", payload["business_transaction_unit_count"])
+	}
+	if payload["business_outcome_status"] != "success" {
+		t.Fatalf("expected business_outcome_status to be success, got %v", payload["business_outcome_status"])
+	}
+	if payload["business_value_cents"] != 150 {
+		t.Fatalf("expected business_value_cents to be 150, got %v", payload["business_value_cents"])
+	}
+	if payload["business_owner"] != "accounting" {
+		t.Fatalf("expected business_owner to be accounting, got %v", payload["business_owner"])
+	}
+	if payload["workflow_step"] != "pricing-calculation" {
+		t.Fatalf("expected workflow_step to be pricing-calculation, got %v", payload["workflow_step"])
+	}
+}
+
 func TestOpenAIExtractorsFromFixtures(t *testing.T) {
 	fixturePath := filepath.Join("..", "llm-observability-fixtures", "provider_usage_replay.json")
 	body, err := os.ReadFile(fixturePath)

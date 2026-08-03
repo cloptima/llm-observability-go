@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.3
+
+- Added support for tracking normalized `BusinessOutcomeSuccess` boolean flags alongside descriptive statuses.
+
 ## 0.2.2
 
 - Initial public beta release of the Cloptima Go LLM observability SDK.
