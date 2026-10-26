@@ -41,7 +41,7 @@ func main() {
 			if payload["provider"] != "gemini" {
 				panic("unexpected provider")
 			}
-			if payload["vendor_reported_cost_usd"].(float64) != 0.4321 {
+			if payload["vendor_reported_cost_usd"] != "0.4321" {
 				panic("expected mapped vendor cost")
 			}
 			extraUsage := payload["extra_usage_units"].(map[string]any)
@@ -73,13 +73,13 @@ func main() {
 
 	_, err := llmobservability.ObserveCall(context.Background(), client, llmobservability.ObserveCallOptions[map[string]any]{
 		Provider:      "gemini",
-		Model:         "gemini-2.5-pro",
+		Model:         "gemini-3.8-flash",
 		ExtractUsage:  extractUsage,
 		FireAndForget: llmobservability.Bool(false),
 		Call: func() (map[string]any, error) {
 			return map[string]any{
 				"responseId":   "gemini-mapped-example",
-				"modelVersion": "gemini-2.5-pro",
+				"modelVersion": "gemini-3.8-flash",
 				"usage": map[string]any{
 					"promptTokenCount":      18,
 					"responseTokenCount":    7,

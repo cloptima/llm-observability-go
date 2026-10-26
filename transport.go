@@ -288,8 +288,8 @@ func fallbackString(value string, fallback string) string {
 
 func InstrumentOpenAICompatibleResponse(ctx context.Context, client Client, response any, options TransportRequestOptions) error {
 	extractor := ExtractOpenAIUsage
-	if normalizeOpenAICompatibleProvider(options.Provider) == "azure_openai" {
-		extractor = ExtractAzureOpenAIUsage
+	if normalizeOpenAICompatibleProvider(options.Provider) == "azure" {
+		extractor = ExtractAzureUsage
 	}
 	event := UsageEvent{
 		Provider:    fallbackString(options.Provider, "openai"),
@@ -302,15 +302,16 @@ func InstrumentOpenAICompatibleResponse(ctx context.Context, client Client, resp
 		Metadata:    cloneAnyMap(options.Metadata),
 	}
 	applyExtractedUsage(&event, extractor(response))
+	event.Provider = normalizeOpenAICompatibleProvider(options.Provider)
 	return recordObservedEvent(ctx, client, event, options.MetadataPrivacy, resolveBoolOption(options.FireAndForget, true))
 }
 
 func InstrumentOpenAICompatibleStream(ctx context.Context, client Client, chunks any, options TransportRequestOptions) error {
 	extractor := ExtractOpenAIStreamUsage
-	if normalizeOpenAICompatibleProvider(options.Provider) == "azure_openai" {
+	if normalizeOpenAICompatibleProvider(options.Provider) == "azure" {
 		extractor = func(input any) ExtractedUsage {
 			extracted := ExtractOpenAIStreamUsage(input)
-			extracted.Provider = stringPtr("azure_openai")
+			extracted.Provider = stringPtr("azure")
 			return extracted
 		}
 	}
@@ -325,15 +326,16 @@ func InstrumentOpenAICompatibleStream(ctx context.Context, client Client, chunks
 		Metadata:    mergeMetadata(options.Metadata, map[string]any{"streamed": true}),
 	}
 	applyExtractedUsage(&event, extractor(chunks))
+	event.Provider = normalizeOpenAICompatibleProvider(options.Provider)
 	return recordObservedEvent(ctx, client, event, options.MetadataPrivacy, resolveBoolOption(options.FireAndForget, true))
 }
 
+// normalizeOpenAICompatibleProvider reports the provider the caller names as
+// named, never relabeled: the server resolves it through the catalog's
+// provider aliases. Only an unnamed provider defaults to openai.
 func normalizeOpenAICompatibleProvider(provider string) string {
-	lowered := strings.ToLower(strings.TrimSpace(provider))
-	switch lowered {
-	case "azure", "azure-openai", "azure_openai":
-		return "azure_openai"
-	default:
-		return "openai"
+	if lowered := strings.ToLower(strings.TrimSpace(provider)); lowered != "" {
+		return lowered
 	}
+	return "openai"
 }

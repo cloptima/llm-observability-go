@@ -474,7 +474,6 @@ func TestBusinessTransactionTransmission(t *testing.T) {
 			BusinessTransactionUnitCount: &unitCount,
 			BusinessOutcomeStatus:        "success",
 			BusinessValueCents:           &valueCents,
-			BusinessOwner:                "accounting",
 			WorkflowStep:                 "pricing-calculation",
 		},
 	}, PreviewOptions{
@@ -501,9 +500,6 @@ func TestBusinessTransactionTransmission(t *testing.T) {
 	}
 	if payload["business_value_cents"] != 150 {
 		t.Fatalf("expected business_value_cents to be 150, got %v", payload["business_value_cents"])
-	}
-	if payload["business_owner"] != "accounting" {
-		t.Fatalf("expected business_owner to be accounting, got %v", payload["business_owner"])
 	}
 	if payload["workflow_step"] != "pricing-calculation" {
 		t.Fatalf("expected workflow_step to be pricing-calculation, got %v", payload["workflow_step"])
@@ -621,6 +617,37 @@ func TestObserveStreamRecordsSuccess(t *testing.T) {
 	metadata := body["metadata"].(map[string]any)
 	if metadata["streamed"] != true {
 		t.Fatalf("expected streamed metadata")
+	}
+}
+
+func TestObserveStreamReportsTheProviderTheCallerNames(t *testing.T) {
+	var body map[string]any
+	httpClient := fakeHTTPClient{do: func(r *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		return jsonResponse(http.StatusAccepted), nil
+	}}
+	client, err := NewClient(Config{APIBaseURL: "https://sdk-ingest.example.cloptima.ai", APIKey: "pat", HTTPClient: httpClient,
+		DefaultAttribution: Attribution{AppID: "agent-api", Environment: "dev"}})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	// ExtractOpenAIStreamUsage labels every OpenAI-compatible stream openai.
+	err = ObserveStream(context.Background(), client, ObserveStreamOptions[map[string]any]{
+		Provider: "openrouter",
+		Model:    "openai/gpt-4o-mini",
+		Call: func(emit func(map[string]any) error) error {
+			return emit(map[string]any{"id": "or-1", "usage": map[string]any{"prompt_tokens": 2, "completion_tokens": 3}})
+		},
+		ExtractUsage:  func(chunks []map[string]any) ExtractedUsage { return ExtractOpenAIStreamUsage(chunks) },
+		FireAndForget: Bool(false),
+	}, func(map[string]any) error { return nil })
+	if err != nil {
+		t.Fatalf("observe stream: %v", err)
+	}
+	if body["provider"] != "openrouter" || body["input_tokens"] != float64(2) {
+		t.Fatalf("event = %v, want provider openrouter with the extracted usage", body)
 	}
 }
 
@@ -976,6 +1003,82 @@ func TestInstrumentOpenAICompatibleHelpers(t *testing.T) {
 	}
 	if bodies[1]["provider_request_id"] != "chatcmpl-openai-helper-stream" {
 		t.Fatalf("expected stream helper to record provider request id")
+	}
+}
+
+func TestInstrumentOpenAICompatibleHelpersLabelAzureOnlyForAzureProvider(t *testing.T) {
+	var bodies []map[string]any
+	httpClient := fakeHTTPClient{do: func(r *http.Request) (*http.Response, error) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		bodies = append(bodies, body)
+		return jsonResponse(http.StatusAccepted), nil
+	}}
+	client, err := NewClient(Config{
+		APIBaseURL:         "https://sdk-ingest.example.cloptima.ai",
+		APIKey:             "pat",
+		DefaultAttribution: Attribution{AppID: "agent-api", Environment: "dev"},
+		HTTPClient:         httpClient,
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	response := map[string]any{
+		"id":              "chatcmpl-azure-helper",
+		"deployment_name": "gpt-4o-mini-prod",
+		"usage":           map[string]any{"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
+	}
+	stream := []any{
+		map[string]any{"id": "chatcmpl-azure-helper-stream", "model": "gpt-4o-mini"},
+		map[string]any{"id": "chatcmpl-azure-helper-stream", "usage": map[string]any{"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}},
+	}
+	if err := InstrumentOpenAICompatibleResponse(context.Background(), client, response, TransportRequestOptions{Provider: "azure", FireAndForget: Bool(false)}); err != nil {
+		t.Fatalf("azure response helper: %v", err)
+	}
+	if err := InstrumentOpenAICompatibleStream(context.Background(), client, stream, TransportRequestOptions{Provider: "azure", FireAndForget: Bool(false)}); err != nil {
+		t.Fatalf("azure stream helper: %v", err)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("expected two recorded azure helper events, got %d", len(bodies))
+	}
+	if bodies[0]["provider"] != "azure" || bodies[0]["model"] != "gpt-4o-mini-prod" {
+		t.Fatalf("expected azure response helper to label provider azure with deployment model, got provider=%v model=%v", bodies[0]["provider"], bodies[0]["model"])
+	}
+	if bodies[1]["provider"] != "azure" {
+		t.Fatalf("expected azure stream helper to label provider azure, got %v", bodies[1]["provider"])
+	}
+
+	for _, legacyProvider := range []string{"azure_openai", "azure-openai"} {
+		if GetProviderUsageExtractor(legacyProvider) != nil || GetProviderStreamUsageExtractor(legacyProvider) != nil {
+			t.Fatalf("expected removed provider value %q to resolve no extractor", legacyProvider)
+		}
+		bodies = nil
+		if err := InstrumentOpenAICompatibleResponse(context.Background(), client, response, TransportRequestOptions{Provider: legacyProvider, FireAndForget: Bool(false)}); err != nil {
+			t.Fatalf("legacy response helper %q: %v", legacyProvider, err)
+		}
+		if len(bodies) != 1 {
+			t.Fatalf("expected one recorded event for %q, got %d", legacyProvider, len(bodies))
+		}
+		// Reported as named, never relabeled openai; the server resolves it
+		// through the catalog's provider aliases.
+		if bodies[0]["provider"] != legacyProvider {
+			t.Fatalf("expected provider %q reported unchanged, got %v", legacyProvider, bodies[0]["provider"])
+		}
+	}
+	foundAzure := false
+	for _, entry := range ListSupportedProviders() {
+		if entry.Provider != "azure" {
+			continue
+		}
+		foundAzure = true
+		if len(entry.Aliases) != 1 || entry.Aliases[0] != "azure" {
+			t.Fatalf("expected azure aliases to be only [azure], got %v", entry.Aliases)
+		}
+	}
+	if !foundAzure {
+		t.Fatal("expected azure in provider support matrix")
 	}
 }
 

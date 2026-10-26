@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	PackageVersion            = "0.2.3"
+	PackageVersion            = "0.3.0"
 	SDKEventSchemaVersion     = "cloptima.llm.event.v1"
 	SDKBatchSchemaVersion     = "cloptima.llm.batch.v1"
 	DefaultAPIBaseURL         = "https://api.cloptima.ai"
@@ -90,7 +90,6 @@ type Attribution struct {
 	BusinessOutcomeStatus        string
 	BusinessOutcomeSuccess       *bool
 	BusinessValueCents           *int
-	BusinessOwner                string
 	WorkflowStep                 string
 }
 
@@ -1101,7 +1100,6 @@ func buildEventPayload(
 		"business_outcome_status":         emptyToNil(mergedAttribution.BusinessOutcomeStatus),
 		"business_outcome_success":        boolPtrToAny(mergedAttribution.BusinessOutcomeSuccess),
 		"business_value_cents":            intPtrToAny(mergedAttribution.BusinessValueCents),
-		"business_owner":                  emptyToNil(mergedAttribution.BusinessOwner),
 		"workflow_step":                   emptyToNil(mergedAttribution.WorkflowStep),
 		"metadata":                        sanitized,
 	}
@@ -1402,9 +1400,6 @@ func mergeAttribution(base Attribution, overlay Attribution) Attribution {
 	}
 	if overlay.BusinessValueCents != nil {
 		merged.BusinessValueCents = overlay.BusinessValueCents
-	}
-	if overlay.BusinessOwner != "" {
-		merged.BusinessOwner = overlay.BusinessOwner
 	}
 	if overlay.WorkflowStep != "" {
 		merged.WorkflowStep = overlay.WorkflowStep
@@ -2089,7 +2084,9 @@ func maxInt(value int, fallback int) int {
 }
 
 func applyExtractedUsage(event *UsageEvent, extracted ExtractedUsage) {
-	if extracted.Provider != nil {
+	// The provider the caller names wins: an extractor's provider is the
+	// label of its response shape (openai for every OpenAI-compatible API).
+	if extracted.Provider != nil && strings.TrimSpace(event.Provider) == "" {
 		event.Provider = *extracted.Provider
 	}
 	if extracted.Model != nil {

@@ -1,8 +1,8 @@
 # Security Policy
 
-Report security issues to `security@cloptima.ai`.
+Do not report security issues in public GitHub issues, pull requests, or discussions.
 
-Please do not open public GitHub issues for sensitive vulnerabilities.
+Report them privately through GitHub: open this repository's **Security** tab and select **Report a vulnerability**, or go to <https://github.com/cloptima/llm-observability-go/security/advisories/new>.
 
 When reporting, include:
 
@@ -11,4 +11,4 @@ When reporting, include:
 - reproduction details
 - any relevant logs, payloads, or traces with secrets removed
 
-Cloptima will acknowledge receipt and coordinate remediation privately.
+Cloptima will triage the report and coordinate the fix and its disclosure with you privately.

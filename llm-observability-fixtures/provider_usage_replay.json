@@ -23,11 +23,148 @@
       "provider_request_id": "chatcmpl-fixture-openai",
       "model": "gpt-4.1-mini",
       "input_tokens": 12,
-      "output_tokens": 8,
+      "output_tokens": 6,
       "total_tokens": 20,
       "reasoning_tokens": 2,
       "cached_input_tokens": 5,
       "cache_hit": true
+    }
+  },
+  {
+    "name": "openai_compatible_cache_write_usage",
+    "provider": "openai",
+    "kind": "response",
+    "payload": {
+      "id": "chatcmpl-fixture-cache-write",
+      "model": "anthropic/claude-haiku-4-5",
+      "usage": {
+        "prompt_tokens": 20,
+        "completion_tokens": 4,
+        "total_tokens": 24,
+        "prompt_tokens_details": { "cached_tokens": 5, "cache_write_tokens": 8 }
+      }
+    },
+    "expected": {
+      "provider": "openai",
+      "provider_request_id": "chatcmpl-fixture-cache-write",
+      "model": "anthropic/claude-haiku-4-5",
+      "input_tokens": 12,
+      "output_tokens": 4,
+      "total_tokens": 24,
+      "cached_input_tokens": 5,
+      "extra_usage_units": { "cache_write": 8 },
+      "cache_hit": true
+    }
+  },
+  {
+    "name": "conduit_chat_cache_write_ttl_usage",
+    "provider": "openai",
+    "kind": "response",
+    "payload": {
+      "id": "chatcmpl-fixture-conduit-ttl",
+      "model": "anthropic/claude-haiku-4-5",
+      "usage": {
+        "prompt_tokens": 1000,
+        "completion_tokens": 20,
+        "total_tokens": 1020,
+        "prompt_tokens_details": {
+          "cached_tokens": 300,
+          "cached_read_tokens": 300,
+          "cache_write_tokens": 500,
+          "cached_write_tokens": 500,
+          "cached_write_token_details": { "cached_write_tokens_5m": 200, "cached_write_tokens_1h": 100 }
+        }
+      }
+    },
+    "expected": {
+      "provider": "openai",
+      "provider_request_id": "chatcmpl-fixture-conduit-ttl",
+      "model": "anthropic/claude-haiku-4-5",
+      "input_tokens": 500,
+      "output_tokens": 20,
+      "total_tokens": 1020,
+      "cached_input_tokens": 300,
+      "extra_usage_units": { "cache_write_5m": 200, "cache_write_1h": 100, "cache_write": 200 },
+      "cache_hit": true
+    }
+  },
+  {
+    "name": "openai_responses_cache_write_usage",
+    "provider": "openai",
+    "kind": "response",
+    "payload": {
+      "id": "resp_fixture_cache_write",
+      "object": "response",
+      "model": "anthropic/claude-haiku-4-5",
+      "status": "completed",
+      "usage": {
+        "input_tokens": 1000,
+        "output_tokens": 30,
+        "total_tokens": 1030,
+        "input_tokens_details": { "cached_tokens": 300, "cache_write_tokens": 500 },
+        "output_tokens_details": { "reasoning_tokens": 10 }
+      }
+    },
+    "expected": {
+      "provider": "openai",
+      "provider_request_id": "resp_fixture_cache_write",
+      "model": "anthropic/claude-haiku-4-5",
+      "input_tokens": 500,
+      "output_tokens": 20,
+      "total_tokens": 1030,
+      "reasoning_tokens": 10,
+      "cached_input_tokens": 300,
+      "extra_usage_units": { "cache_write": 500 },
+      "cache_hit": true
+    }
+  },
+  {
+    "name": "xai_chat_reasoning_outside_completion_usage",
+    "provider": "openai",
+    "kind": "response",
+    "payload": {
+      "id": "chatcmpl-fixture-xai",
+      "model": "grok-4",
+      "usage": {
+        "prompt_tokens": 32,
+        "completion_tokens": 1000,
+        "total_tokens": 1232,
+        "completion_tokens_details": { "reasoning_tokens": 200 }
+      }
+    },
+    "expected": {
+      "provider": "openai",
+      "provider_request_id": "chatcmpl-fixture-xai",
+      "model": "grok-4",
+      "input_tokens": 32,
+      "output_tokens": 1000,
+      "total_tokens": 1232,
+      "reasoning_tokens": 200
+    }
+  },
+  {
+    "name": "conduit_chat_image_output_with_text_tokens_usage",
+    "provider": "openai",
+    "kind": "response",
+    "payload": {
+      "id": "chatcmpl-fixture-image-output",
+      "model": "gemini-2.5-flash-image",
+      "usage": {
+        "prompt_tokens": 100,
+        "completion_tokens": 1490,
+        "total_tokens": 1590,
+        "completion_tokens_details": { "text_tokens": 100, "image_tokens": 1290, "reasoning_tokens": 100 }
+      }
+    },
+    "expected": {
+      "provider": "openai",
+      "provider_request_id": "chatcmpl-fixture-image-output",
+      "model": "gemini-2.5-flash-image",
+      "input_tokens": 100,
+      "output_tokens": 1390,
+      "total_tokens": 1590,
+      "reasoning_tokens": 100,
+      "extra_usage_units": { "output_image": 1290 }
     }
   },
   {
@@ -84,8 +221,102 @@
     }
   },
   {
-    "name": "azure_openai_deployment_usage",
-    "provider": "azure_openai",
+    "name": "openai_responses_usage",
+    "provider": "openai",
+    "kind": "response",
+    "payload": {
+      "id": "resp_fixture_openai",
+      "object": "response",
+      "model": "gpt-5-mini",
+      "status": "completed",
+      "usage": {
+        "input_tokens": 40,
+        "output_tokens": 12,
+        "total_tokens": 52,
+        "input_tokens_details": { "cached_tokens": 16 },
+        "output_tokens_details": { "reasoning_tokens": 6 }
+      }
+    },
+    "expected": {
+      "provider": "openai",
+      "provider_request_id": "resp_fixture_openai",
+      "model": "gpt-5-mini",
+      "input_tokens": 40,
+      "output_tokens": 6,
+      "total_tokens": 52,
+      "reasoning_tokens": 6,
+      "cached_input_tokens": 16,
+      "cache_hit": true
+    }
+  },
+  {
+    "name": "openai_responses_stream_terminal_usage",
+    "provider": "openai",
+    "kind": "stream",
+    "payload": [
+      { "type": "response.created", "sequence_number": 0, "response": { "id": "resp_fixture_openai_stream", "object": "response", "model": "gpt-5-mini", "status": "in_progress", "usage": null } },
+      { "type": "response.output_text.delta", "sequence_number": 1, "item_id": "msg_1", "output_index": 0, "content_index": 0, "delta": "hello" },
+      {
+        "type": "response.completed",
+        "sequence_number": 2,
+        "response": {
+          "id": "resp_fixture_openai_stream",
+          "object": "response",
+          "model": "gpt-5-mini",
+          "status": "completed",
+          "usage": {
+            "input_tokens": 40,
+            "output_tokens": 12,
+            "total_tokens": 52,
+            "input_tokens_details": { "cached_tokens": 16 },
+            "output_tokens_details": { "reasoning_tokens": 6 }
+          }
+        }
+      }
+    ],
+    "expected": {
+      "provider": "openai",
+      "provider_request_id": "resp_fixture_openai_stream",
+      "model": "gpt-5-mini",
+      "input_tokens": 40,
+      "output_tokens": 6,
+      "total_tokens": 52,
+      "reasoning_tokens": 6,
+      "cached_input_tokens": 16,
+      "cache_hit": true
+    }
+  },
+  {
+    "name": "openai_responses_stream_incomplete_usage",
+    "provider": "openai",
+    "kind": "stream",
+    "payload": [
+      { "type": "response.created", "sequence_number": 0, "response": { "id": "resp_fixture_incomplete", "object": "response", "model": "gpt-5-mini", "status": "in_progress", "usage": null } },
+      {
+        "type": "response.incomplete",
+        "sequence_number": 1,
+        "response": {
+          "id": "resp_fixture_incomplete",
+          "object": "response",
+          "model": "gpt-5-mini",
+          "status": "incomplete",
+          "incomplete_details": { "reason": "max_output_tokens" },
+          "usage": { "input_tokens": 9, "output_tokens": 32, "total_tokens": 41 }
+        }
+      }
+    ],
+    "expected": {
+      "provider": "openai",
+      "provider_request_id": "resp_fixture_incomplete",
+      "model": "gpt-5-mini",
+      "input_tokens": 9,
+      "output_tokens": 32,
+      "total_tokens": 41
+    }
+  },
+  {
+    "name": "azure_deployment_usage",
+    "provider": "azure",
     "kind": "response",
     "payload": {
       "id": "chatcmpl-fixture-azure",
@@ -97,7 +328,7 @@
       }
     },
     "expected": {
-      "provider": "azure_openai",
+      "provider": "azure",
       "provider_request_id": "chatcmpl-fixture-azure",
       "model": "gpt-4o-mini-prod",
       "input_tokens": 9,
@@ -106,8 +337,8 @@
     }
   },
   {
-    "name": "azure_openai_multimodal_usage",
-    "provider": "azure_openai",
+    "name": "azure_multimodal_usage",
+    "provider": "azure",
     "kind": "response",
     "payload": {
       "id": "chatcmpl-fixture-azure-multimodal",
@@ -122,7 +353,7 @@
       }
     },
     "expected": {
-      "provider": "azure_openai",
+      "provider": "azure",
       "provider_request_id": "chatcmpl-fixture-azure-multimodal",
       "model": "gpt-4o-mini-prod",
       "input_tokens": 9,
@@ -151,11 +382,38 @@
       "provider": "anthropic",
       "provider_request_id": "msg-fixture-anthropic",
       "model": "claude-haiku-4-5",
-      "input_tokens": 14,
+      "input_tokens": 18,
       "output_tokens": 5,
-      "total_tokens": 19,
+      "total_tokens": 23,
       "cached_input_tokens": 4,
       "extra_usage_units": { "cache_write": 3 },
+      "cache_hit": true
+    }
+  },
+  {
+    "name": "anthropic_cache_write_ttl_usage",
+    "provider": "anthropic",
+    "kind": "response",
+    "payload": {
+      "id": "msg-fixture-anthropic-ttl",
+      "model": "claude-haiku-4-5",
+      "usage": {
+        "input_tokens": 10,
+        "output_tokens": 2,
+        "cache_read_input_tokens": 6,
+        "cache_creation_input_tokens": 5,
+        "cache_creation": { "ephemeral_5m_input_tokens": 3, "ephemeral_1h_input_tokens": 2 }
+      }
+    },
+    "expected": {
+      "provider": "anthropic",
+      "provider_request_id": "msg-fixture-anthropic-ttl",
+      "model": "claude-haiku-4-5",
+      "input_tokens": 16,
+      "output_tokens": 2,
+      "total_tokens": 18,
+      "cached_input_tokens": 6,
+      "extra_usage_units": { "cache_write_5m": 3, "cache_write_1h": 2 },
       "cache_hit": true
     }
   },
@@ -232,11 +490,49 @@
       "provider": "anthropic",
       "provider_request_id": "msg-fixture-anthropic-stream",
       "model": "claude-haiku-4-5",
-      "input_tokens": 10,
+      "input_tokens": 12,
       "output_tokens": 7,
-      "total_tokens": 17,
+      "total_tokens": 19,
       "cached_input_tokens": 2,
       "extra_usage_units": { "cache_write": 1 },
+      "cache_hit": true
+    }
+  },
+  {
+    "name": "anthropic_stream_cache_write_ttl_usage",
+    "provider": "anthropic",
+    "kind": "stream",
+    "payload": [
+      {
+        "type": "message_start",
+        "message": {
+          "id": "msg-fixture-anthropic-stream-ttl",
+          "model": "claude-haiku-4-5",
+          "usage": {
+            "input_tokens": 10,
+            "output_tokens": 1,
+            "cache_read_input_tokens": 6,
+            "cache_creation_input_tokens": 500,
+            "cache_creation": { "ephemeral_5m_input_tokens": 300, "ephemeral_1h_input_tokens": 200 }
+          }
+        }
+      },
+      { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "hi" } },
+      {
+        "type": "message_delta",
+        "delta": { "stop_reason": "end_turn" },
+        "usage": { "input_tokens": 10, "output_tokens": 40, "cache_read_input_tokens": 6, "cache_creation_input_tokens": 500 }
+      }
+    ],
+    "expected": {
+      "provider": "anthropic",
+      "provider_request_id": "msg-fixture-anthropic-stream-ttl",
+      "model": "claude-haiku-4-5",
+      "input_tokens": 16,
+      "output_tokens": 40,
+      "total_tokens": 56,
+      "cached_input_tokens": 6,
+      "extra_usage_units": { "cache_write_5m": 300, "cache_write_1h": 200 },
       "cache_hit": true
     }
   },
@@ -438,6 +734,27 @@
       "output_tokens": 6,
       "total_tokens": 26,
       "latency_ms": 321
+    }
+  },
+  {
+    "name": "bedrock_cache_usage",
+    "provider": "bedrock",
+    "kind": "response",
+    "payload": {
+      "modelId": "anthropic.claude-3-5-sonnet",
+      "usage": { "inputTokens": 10, "outputTokens": 6, "totalTokens": 41, "cacheReadInputTokens": 20, "cacheWriteInputTokens": 5 },
+      "ResponseMetadata": { "RequestId": "bedrock-fixture-cache" }
+    },
+    "expected": {
+      "provider": "bedrock",
+      "provider_request_id": "bedrock-fixture-cache",
+      "model": "anthropic.claude-3-5-sonnet",
+      "input_tokens": 30,
+      "output_tokens": 6,
+      "total_tokens": 41,
+      "cached_input_tokens": 20,
+      "extra_usage_units": { "cache_write": 5 },
+      "cache_hit": true
     }
   },
   {

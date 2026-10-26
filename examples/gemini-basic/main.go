@@ -47,13 +47,13 @@ func main() {
 
 	_, err := llmobservability.ObserveCall(context.Background(), client, llmobservability.ObserveCallOptions[map[string]any]{
 		Provider:      "gemini",
-		Model:         "gemini-2.5-flash",
+		Model:         "gemini-3.8-flash",
 		ExtractUsage:  llmobservability.ExtractGeminiUsage,
 		FireAndForget: llmobservability.Bool(false),
 		Call: func() (map[string]any, error) {
 			return map[string]any{
 				"responseId":   "gemini-basic-example",
-				"modelVersion": "gemini-2.5-flash",
+				"modelVersion": "gemini-3.8-flash",
 				"usageMetadata": map[string]any{
 					"promptTokenCount":     13,
 					"candidatesTokenCount": 8,

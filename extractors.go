@@ -71,12 +71,12 @@ var providerUsageExtractors = []ProviderUsageExtractorDescriptor{
 		StreamExtractor:   ExtractOpenAIStreamUsage,
 	},
 	{
-		Provider:          "azure_openai",
-		Aliases:           []string{"azure_openai", "azure-openai", "azure"},
-		ResponseExtractor: ExtractAzureOpenAIUsage,
+		Provider:          "azure",
+		Aliases:           []string{"azure"},
+		ResponseExtractor: ExtractAzureUsage,
 		StreamExtractor: func(input any) ExtractedUsage {
 			extracted := ExtractOpenAIStreamUsage(input)
-			extracted.Provider = stringPtr("azure_openai")
+			extracted.Provider = stringPtr("azure")
 			return extracted
 		},
 	},
@@ -251,22 +251,51 @@ func CreateMappedUsageExtractor(config MappedUsageExtractorConfig) UsageExtracto
 	}
 }
 
-func ExtractOpenAIUsage(input any) ExtractedUsage {
+// openAIResponseRecord is the object carrying usage: a Responses stream event
+// nests it under response; chat chunks and unstreamed responses are the
+// object itself.
+func openAIResponseRecord(input any) map[string]any {
 	mapping := coerceMap(input)
+	if response := nestedMap(mapping, "response"); len(response) > 0 {
+		return response
+	}
+	return mapping
+}
+
+func ExtractOpenAIUsage(input any) ExtractedUsage {
+	mapping := openAIResponseRecord(input)
 	usage := nestedMap(mapping, "usage")
-	promptDetails := firstNestedMap(usage, "prompt_tokens_details", "promptTokensDetails")
-	completionDetails := firstNestedMap(usage, "completion_tokens_details", "completionTokensDetails")
+	// Chat names usage prompt/completion; Responses names it input/output.
+	promptDetails := firstNestedMap(usage, "prompt_tokens_details", "promptTokensDetails", "input_tokens_details")
+	completionDetails := firstNestedMap(usage, "completion_tokens_details", "completionTokensDetails", "output_tokens_details")
 	cached := resolveMappedIntOrMinusOne(promptDetails, "cached_tokens")
+	extra := extractRuntimeExtraUsageUnits(usage, promptDetails, completionDetails)
+	// Prompt tokens count cache reads and writes, and completion tokens count
+	// reasoning. The usage convention reports writes as cache_write units and
+	// reasoning outside output.
+	inputTokens := firstMappedInt(usage, "prompt_tokens", "input_tokens")
+	if inputTokens >= 0 {
+		inputTokens = maxZero(inputTokens - cacheWriteTotal(extra))
+	}
+	reasoningTokens := resolveMappedIntOrMinusOne(completionDetails, "reasoning_tokens")
+	outputTokens := firstMappedInt(usage, "completion_tokens", "output_tokens")
+	// Except where the total shows completion leaves reasoning out (xAI:
+	// total = prompt + completion + reasoning).
+	completionExcludesReasoning := reasoningTokens > 0 &&
+		resolveMappedIntOrMinusOne(usage, "total_tokens") == maxZero(firstMappedInt(usage, "prompt_tokens", "input_tokens"))+maxZero(outputTokens)+reasoningTokens
+	if outputTokens >= 0 && !completionExcludesReasoning {
+		outputTokens = maxZero(outputTokens - maxZero(reasoningTokens))
+	}
 	result := ExtractedUsage{
 		Provider:          stringPtr("openai"),
 		ProviderRequestID: nonEmptyString(mapping["id"]),
 		Model:             nonEmptyString(mapping["model"]),
-		InputTokens:       nonNegativeInt(resolveMappedIntOrMinusOne(usage, "prompt_tokens")),
-		OutputTokens:      nonNegativeInt(resolveMappedIntOrMinusOne(usage, "completion_tokens")),
+		InputTokens:       nonNegativeInt(inputTokens),
+		OutputTokens:      nonNegativeInt(outputTokens),
 		TotalTokens:       nonNegativeInt(resolveMappedIntOrMinusOne(usage, "total_tokens")),
-		ReasoningTokens:   nonNegativeInt(resolveMappedIntOrMinusOne(completionDetails, "reasoning_tokens")),
+		ReasoningTokens:   nonNegativeInt(reasoningTokens),
 		CachedInputTokens: nonNegativeInt(cached),
-		ExtraUsageUnits:   extractRuntimeExtraUsageUnits(usage, promptDetails, completionDetails),
+		ExtraUsageUnits:   extra,
 	}
 	if cached > 0 {
 		result.CacheHit = Bool(true)
@@ -280,7 +309,7 @@ func ExtractOpenAIStreamUsage(input any) ExtractedUsage {
 	var lastModel *string
 	var usageChunk map[string]any
 	for _, chunk := range chunks {
-		record := coerceMap(chunk)
+		record := openAIResponseRecord(chunk)
 		if len(record) == 0 {
 			continue
 		}
@@ -311,10 +340,10 @@ func ExtractOpenAIStreamUsage(input any) ExtractedUsage {
 	return stripEmptyExtractedUsage(extracted)
 }
 
-func ExtractAzureOpenAIUsage(input any) ExtractedUsage {
+func ExtractAzureUsage(input any) ExtractedUsage {
 	mapping := coerceMap(input)
 	extracted := ExtractOpenAIUsage(input)
-	extracted.Provider = stringPtr("azure_openai")
+	extracted.Provider = stringPtr("azure")
 	if extracted.Model == nil {
 		extracted.Model = firstNonEmptyString(mapping["deployment_name"], mapping["deployment"], mapping["model"])
 	}
@@ -324,9 +353,11 @@ func ExtractAzureOpenAIUsage(input any) ExtractedUsage {
 func ExtractAnthropicUsage(input any) ExtractedUsage {
 	mapping := coerceMap(input)
 	usage := nestedMap(mapping, "usage")
-	inputTokens := resolveMappedIntOrMinusOne(usage, "input_tokens")
 	outputTokens := resolveMappedIntOrMinusOne(usage, "output_tokens")
 	cacheReadTokens := resolveMappedIntOrMinusOne(usage, "cache_read_input_tokens")
+	// Anthropic's input_tokens counts neither cache reads nor writes; writes
+	// bill as cache_write units.
+	inputTokens := withCacheReads(resolveMappedIntOrMinusOne(usage, "input_tokens"), cacheReadTokens)
 	totalTokens := resolveMappedIntOrMinusOne(usage, "total_tokens")
 	extra := extractRuntimeExtraUsageUnits(usage)
 	addIfPositive(extra, "server_tool_use", resolveMappedIntOrMinusOne(usage, "server_tool_use"))
@@ -343,50 +374,71 @@ func ExtractAnthropicUsage(input any) ExtractedUsage {
 	})
 }
 
+// mergeStreamUsage keeps each usage field's largest value across stream
+// events. Stream counters are cumulative, and Anthropic splits cache writes by
+// TTL only in message_start (message_delta repeats the totals without the
+// split), so the merged usage reads like the unstreamed response's.
+func mergeStreamUsage(previous map[string]any, next map[string]any) map[string]any {
+	if previous == nil {
+		return next
+	}
+	merged := make(map[string]any, len(previous)+len(next))
+	for key, value := range previous {
+		merged[key] = value
+	}
+	for key, value := range next {
+		prior := merged[key]
+		priorMap, priorIsMap := prior.(map[string]any)
+		valueMap, valueIsMap := value.(map[string]any)
+		switch {
+		case isUsageNumber(value) && isUsageNumber(prior):
+			if resolveInt(value) > resolveInt(prior) {
+				merged[key] = value
+			}
+		case priorIsMap && valueIsMap:
+			merged[key] = mergeStreamUsage(priorMap, valueMap)
+		case value != nil:
+			merged[key] = value
+		}
+	}
+	return merged
+}
+
+func isUsageNumber(value any) bool {
+	switch value.(type) {
+	case int, int64, float64, float32, json.Number:
+		return true
+	}
+	return false
+}
+
 func ExtractAnthropicStreamUsage(input any) ExtractedUsage {
-	chunks := coerceSlice(input)
 	var messageID *string
 	var model *string
-	inputTokens, outputTokens, cacheReadTokens := -1, -1, -1
-	lastInputTokens, lastOutputTokens, lastCacheReadTokens := -1, -1, -1
-	extra := map[string]int{}
-	lastExtra := map[string]int{}
-	for _, chunk := range chunks {
+	var usage map[string]any
+	for _, chunk := range coerceSlice(input) {
 		record := coerceMap(chunk)
 		if len(record) == 0 {
 			continue
 		}
-		message := nestedMap(record, "message")
-		var usage map[string]any
-		if len(message) > 0 {
+		source := record
+		if message := nestedMap(record, "message"); len(message) > 0 {
 			if value := nonEmptyString(message["id"]); value != nil {
 				messageID = value
 			}
 			if value := nonEmptyString(message["model"]); value != nil {
 				model = value
 			}
-			usage = nestedMap(message, "usage")
-		} else {
-			usage = nestedMap(record, "usage")
+			source = message
 		}
-		inputTokens, lastInputTokens = accumulateStreamingCounter(inputTokens, lastInputTokens, resolveMappedIntOrMinusOne(usage, "input_tokens"))
-		outputTokens, lastOutputTokens = accumulateStreamingCounter(outputTokens, lastOutputTokens, resolveMappedIntOrMinusOne(usage, "output_tokens"))
-		cacheReadTokens, lastCacheReadTokens = accumulateStreamingCounter(cacheReadTokens, lastCacheReadTokens, resolveMappedIntOrMinusOne(usage, "cache_read_input_tokens"))
-		chunkExtra := extractRuntimeExtraUsageUnits(usage)
-		addIfPositive(chunkExtra, "server_tool_use", resolveMappedIntOrMinusOne(usage, "server_tool_use"))
-		accumulateStreamingUsageMap(extra, lastExtra, chunkExtra)
+		if chunkUsage := nestedMap(source, "usage"); len(chunkUsage) > 0 {
+			usage = mergeStreamUsage(usage, chunkUsage)
+		}
 	}
-	return stripEmptyExtractedUsage(ExtractedUsage{
-		Provider:          stringPtr("anthropic"),
-		ProviderRequestID: messageID,
-		Model:             model,
-		InputTokens:       nonNegativeInt(inputTokens),
-		OutputTokens:      nonNegativeInt(outputTokens),
-		TotalTokens:       deriveTotalTokens(-1, inputTokens, outputTokens),
-		CachedInputTokens: nonNegativeInt(cacheReadTokens),
-		ExtraUsageUnits:   emptyUsageMapToNil(extra),
-		CacheHit:          boolIfPositive(cacheReadTokens),
-	})
+	extracted := ExtractAnthropicUsage(map[string]any{"usage": usage})
+	extracted.ProviderRequestID = messageID
+	extracted.Model = model
+	return stripEmptyExtractedUsage(extracted)
 }
 
 func ExtractGeminiUsage(input any) ExtractedUsage {
@@ -465,13 +517,16 @@ func ExtractBedrockUsage(input any) ExtractedUsage {
 	responseMetadata := nestedMap(mapping, "ResponseMetadata")
 	promptDetails := firstNestedValueAsMapOrList(usage, "promptTokensDetails", "prompt_tokens_details", "inputTokensDetails", "input_tokens_details")
 	completionDetails := firstNestedValueAsMapOrList(usage, "completionTokensDetails", "completion_tokens_details", "outputTokensDetails", "output_tokens_details")
+	cacheReadTokens := firstMappedInt(usage, "cacheReadInputTokens", "cache_read_input_tokens")
 	return stripEmptyExtractedUsage(ExtractedUsage{
 		Provider:          stringPtr("bedrock"),
 		ProviderRequestID: firstNonEmptyString(mapping["requestId"], mapping["request_id"], responseMetadata["RequestId"]),
 		Model:             firstNonEmptyString(mapping["modelId"], mapping["model_id"], mapping["model"]),
-		InputTokens:       nonNegativeInt(firstMappedInt(usage, "inputTokens", "input_tokens")),
+		InputTokens:       nonNegativeInt(withCacheReads(firstMappedInt(usage, "inputTokens", "input_tokens"), cacheReadTokens)),
 		OutputTokens:      nonNegativeInt(firstMappedInt(usage, "outputTokens", "output_tokens")),
 		TotalTokens:       nonNegativeInt(firstMappedInt(usage, "totalTokens", "total_tokens")),
+		CachedInputTokens: nonNegativeInt(cacheReadTokens),
+		CacheHit:          boolIfPositive(cacheReadTokens),
 		LatencyMS:         nonNegativeInt(firstMappedInt(metrics, "latencyMs", "latency_ms")),
 		ExtraUsageUnits:   extractRuntimeExtraUsageUnits(usage, promptDetails, completionDetails),
 	})
@@ -481,8 +536,8 @@ func ExtractBedrockStreamUsage(input any) ExtractedUsage {
 	chunks := coerceSlice(input)
 	var requestID *string
 	var model *string
-	inputTokens, outputTokens, totalTokens := -1, -1, -1
-	lastInputTokens, lastOutputTokens := -1, -1
+	inputTokens, outputTokens, totalTokens, cacheReadTokens := -1, -1, -1, -1
+	lastInputTokens, lastOutputTokens, lastCacheReadTokens := -1, -1, -1
 	extra := map[string]int{}
 	lastExtra := map[string]int{}
 	sawUsage := false
@@ -509,6 +564,7 @@ func ExtractBedrockStreamUsage(input any) ExtractedUsage {
 		chunkExtra := extractRuntimeExtraUsageUnits(usage, promptDetails, completionDetails)
 		inputTokens, lastInputTokens = accumulateStreamingCounter(inputTokens, lastInputTokens, inputCount)
 		outputTokens, lastOutputTokens = accumulateStreamingCounter(outputTokens, lastOutputTokens, outputCount)
+		cacheReadTokens, lastCacheReadTokens = accumulateStreamingCounter(cacheReadTokens, lastCacheReadTokens, firstMappedInt(usage, "cacheReadInputTokens", "cache_read_input_tokens"))
 		if inputCount >= 0 || outputCount >= 0 || len(chunkExtra) > 0 {
 			sawUsage = true
 		}
@@ -517,13 +573,18 @@ func ExtractBedrockStreamUsage(input any) ExtractedUsage {
 			totalTokens = totalCount
 		}
 	}
+	if !sawUsage {
+		cacheReadTokens = -1
+	}
 	return stripEmptyExtractedUsage(ExtractedUsage{
 		Provider:          stringPtr("bedrock"),
 		ProviderRequestID: requestID,
 		Model:             model,
-		InputTokens:       nonNegativeIntIf(sawUsage, inputTokens),
+		InputTokens:       nonNegativeIntIf(sawUsage, withCacheReads(inputTokens, cacheReadTokens)),
 		OutputTokens:      nonNegativeIntIf(sawUsage, outputTokens),
-		TotalTokens:       deriveTotalTokensIf(sawUsage, totalTokens, inputTokens, outputTokens),
+		TotalTokens:       deriveTotalTokensIf(sawUsage, totalTokens, withCacheReads(inputTokens, cacheReadTokens), outputTokens),
+		CachedInputTokens: nonNegativeIntIf(sawUsage, cacheReadTokens),
+		CacheHit:          boolIfPositive(cacheReadTokens),
 		ExtraUsageUnits:   emptyUsageMapToNil(extra),
 	})
 }
@@ -923,8 +984,69 @@ func firstMappedInt(mapping map[string]any, keys ...string) int {
 	return -1
 }
 
+// cacheWriteUsageUnits reports cache writes as Cloptima bills them:
+// cache_write_5m and cache_write_1h when the response splits them by TTL,
+// and cache_write for any total it does not split. Anthropic reports
+// cache_creation_input_tokens and cache_creation.ephemeral_*; Bedrock
+// reports cacheWriteInputTokens; OpenAI-compatible APIs report
+// cache_write_tokens (or cached_write_tokens and cached_write_token_details)
+// in the prompt details.
+func cacheWriteUsageUnits(usage map[string]any, promptDetails map[string]any) map[string]int {
+	creation := nestedMap(usage, "cache_creation")
+	writeDetails := nestedMap(promptDetails, "cached_write_token_details")
+	ttl := func(suffix string, ephemeral string, detail string) int {
+		for _, value := range []int{
+			firstMappedInt(creation, ephemeral),
+			firstMappedInt(writeDetails, detail),
+			firstMappedInt(usage, "cache_creation_input_tokens_"+suffix, "cache_write_input_tokens_"+suffix),
+			firstMappedInt(promptDetails, "cache_creation_input_tokens_"+suffix, "cache_write_input_tokens_"+suffix),
+		} {
+			if value > 0 {
+				return value
+			}
+		}
+		return 0
+	}
+	fiveMinutes := ttl("5m", "ephemeral_5m_input_tokens", "cached_write_tokens_5m")
+	oneHour := ttl("1h", "ephemeral_1h_input_tokens", "cached_write_tokens_1h")
+	total := firstMappedInt(usage, "cache_creation_input_tokens", "cacheCreationInputTokens", "cache_write_input_tokens", "cacheWriteInputTokens")
+	if total <= 0 {
+		total = firstMappedInt(promptDetails, "cache_write_tokens", "cached_write_tokens", "cache_creation_input_tokens", "cache_write_input_tokens")
+	}
+	result := map[string]int{}
+	for key, value := range map[string]int{"cache_write_5m": fiveMinutes, "cache_write_1h": oneHour, "cache_write": total - fiveMinutes - oneHour} {
+		if value > 0 {
+			result[key] = value
+		}
+	}
+	return result
+}
+
+func cacheWriteTotal(extra map[string]int) int {
+	return extra["cache_write"] + extra["cache_write_5m"] + extra["cache_write_1h"]
+}
+
+// withCacheReads counts cache reads in input, as Cloptima bills them:
+// Anthropic and Bedrock count input without them. -1 means not reported.
+func withCacheReads(inputTokens int, cacheReadTokens int) int {
+	if inputTokens < 0 && cacheReadTokens < 0 {
+		return -1
+	}
+	return maxZero(inputTokens) + maxZero(cacheReadTokens)
+}
+
 func extractRuntimeExtraUsageUnits(values ...any) map[string]int {
 	result := map[string]int{}
+	var usage, promptDetails map[string]any
+	if len(values) > 0 {
+		usage, _ = values[0].(map[string]any)
+	}
+	if len(values) > 1 {
+		promptDetails, _ = values[1].(map[string]any)
+	}
+	for key, value := range cacheWriteUsageUnits(usage, promptDetails) {
+		result[key] = value
+	}
 	for index, value := range values {
 		switch typed := value.(type) {
 		case map[string]any:
@@ -943,7 +1065,6 @@ func extractRuntimeExtraUsageUnits(values ...any) map[string]int {
 			addIfPositive(result, "output_audio", firstMappedInt(typed, "output_audio_tokens", "outputAudioTokens"))
 			addIfPositive(result, "output_image", firstMappedInt(typed, "output_image_tokens", "outputImageTokens"))
 			addIfPositive(result, "output_video", firstMappedInt(typed, "output_video_tokens", "outputVideoTokens"))
-			addIfPositive(result, "cache_write", firstMappedInt(typed, "cache_creation_input_tokens", "cacheCreationInputTokens"))
 		case []any:
 			for _, item := range typed {
 				entry := coerceMap(item)

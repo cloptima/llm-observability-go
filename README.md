@@ -223,7 +223,7 @@ If you already operate an OTEL collector and emit GenAI spans, you can also send
 Built-in usage extractors cover:
 
 - OpenAI
-- Azure OpenAI
+- Microsoft Foundry (Azure), provider id `azure`
 - Anthropic
 - Gemini
 - Vertex AI

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0
+
+- Added usage extraction for OpenAI Responses API responses and streams.
+- Improved cache-write usage reporting by cache TTL for Anthropic, Bedrock, and OpenAI-compatible APIs.
+- Added `ExtractAzureUsage` for Microsoft Foundry, and OpenAI-compatible helpers now report the `Provider` you pass.
+
 ## 0.2.3
 
 - Added support for tracking normalized `BusinessOutcomeSuccess` boolean flags alongside descriptive statuses.
