@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	PackageVersion            = "0.3.0"
+	PackageVersion            = "0.4.0"
 	SDKEventSchemaVersion     = "cloptima.llm.event.v1"
 	SDKBatchSchemaVersion     = "cloptima.llm.batch.v1"
 	DefaultAPIBaseURL         = "https://api.cloptima.ai"

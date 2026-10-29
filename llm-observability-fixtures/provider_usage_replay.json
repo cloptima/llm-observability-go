@@ -455,7 +455,7 @@
         "input_tokens": 14,
         "output_tokens": 5,
         "input_audio_tokens": 9,
-        "server_tool_use": 2
+        "server_tool_use": { "web_search_requests": 2, "web_fetch_requests": 1 }
       }
     },
     "expected": {
@@ -467,7 +467,7 @@
       "total_tokens": 19,
       "extra_usage_units": {
         "input_audio": 9,
-        "server_tool_use": 2
+        "search_request": 2
       }
     }
   },
@@ -773,6 +773,107 @@
       "input_tokens": 5,
       "output_tokens": 7,
       "total_tokens": 12
+    }
+  },
+  {
+    "name": "anthropic_stream_web_search_usage",
+    "provider": "anthropic",
+    "kind": "stream",
+    "payload": [
+      { "type": "message_start", "message": { "id": "msg-fixture-anthropic-search-stream", "model": "claude-sonnet-4-6", "usage": { "input_tokens": 10 } } },
+      { "type": "message_delta", "usage": { "output_tokens": 7, "server_tool_use": { "web_search_requests": 2 } } }
+    ],
+    "expected": {
+      "provider": "anthropic",
+      "provider_request_id": "msg-fixture-anthropic-search-stream",
+      "model": "claude-sonnet-4-6",
+      "input_tokens": 10,
+      "output_tokens": 7,
+      "total_tokens": 17,
+      "extra_usage_units": { "search_request": 2 }
+    }
+  },
+  {
+    "name": "conduit_chat_web_search_usage",
+    "provider": "openai",
+    "kind": "response",
+    "payload": {
+      "id": "chatcmpl-fixture-conduit-search",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "prompt_tokens": 40,
+        "completion_tokens": 10,
+        "total_tokens": 50,
+        "completion_tokens_details": { "num_search_queries": 3 },
+        "tool_usage": { "web_search": { "num_requests": 3 } }
+      }
+    },
+    "expected": {
+      "provider": "openai",
+      "provider_request_id": "chatcmpl-fixture-conduit-search",
+      "model": "claude-sonnet-4-6",
+      "input_tokens": 40,
+      "output_tokens": 10,
+      "total_tokens": 50,
+      "extra_usage_units": { "search_request": 3 }
+    }
+  },
+  {
+    "name": "conduit_responses_web_search_usage",
+    "provider": "openai",
+    "kind": "response",
+    "payload": {
+      "id": "resp-fixture-conduit-search",
+      "object": "response",
+      "model": "gpt-5",
+      "status": "completed",
+      "tool_usage": { "web_search": { "num_requests": 2 } },
+      "usage": {
+        "input_tokens": 30,
+        "output_tokens": 12,
+        "total_tokens": 42,
+        "output_tokens_details": { "reasoning_tokens": 4, "num_search_queries": 2 }
+      }
+    },
+    "expected": {
+      "provider": "openai",
+      "provider_request_id": "resp-fixture-conduit-search",
+      "model": "gpt-5",
+      "input_tokens": 30,
+      "output_tokens": 8,
+      "total_tokens": 42,
+      "reasoning_tokens": 4,
+      "extra_usage_units": { "search_request": 2 }
+    }
+  },
+  {
+    "name": "conduit_responses_stream_web_search_usage",
+    "provider": "openai",
+    "kind": "stream",
+    "payload": [
+      { "type": "response.created", "sequence_number": 0, "response": { "id": "resp-fixture-conduit-search-stream", "object": "response", "model": "gpt-5", "status": "in_progress", "usage": null } },
+      { "type": "response.output_text.delta", "sequence_number": 1, "item_id": "msg_1", "output_index": 0, "content_index": 0, "delta": "hello" },
+      {
+        "type": "response.completed",
+        "sequence_number": 2,
+        "response": {
+          "id": "resp-fixture-conduit-search-stream",
+          "object": "response",
+          "model": "gpt-5",
+          "status": "completed",
+          "tool_usage": { "web_search": { "num_requests": 1 } },
+          "usage": { "input_tokens": 20, "output_tokens": 6, "total_tokens": 26 }
+        }
+      }
+    ],
+    "expected": {
+      "provider": "openai",
+      "provider_request_id": "resp-fixture-conduit-search-stream",
+      "model": "gpt-5",
+      "input_tokens": 20,
+      "output_tokens": 6,
+      "total_tokens": 26,
+      "extra_usage_units": { "search_request": 1 }
     }
   }
 ]

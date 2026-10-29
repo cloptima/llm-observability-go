@@ -262,6 +262,26 @@ func openAIResponseRecord(input any) map[string]any {
 	return mapping
 }
 
+// conduitWebSearchRequests reads Conduit's web search count,
+// tool_usage.web_search.num_requests: inside usage on chat completions, at the
+// response root on Responses. num_search_queries in the token details is not
+// this count. -1 means not reported.
+func conduitWebSearchRequests(record map[string]any) int {
+	return firstMappedInt(nestedMap(nestedMap(record, "tool_usage"), "web_search"), "num_requests")
+}
+
+// withSearchRequests reports a positive web search count as search_request.
+func withSearchRequests(extra map[string]int, searches int) map[string]int {
+	if searches <= 0 {
+		return extra
+	}
+	if extra == nil {
+		extra = map[string]int{}
+	}
+	extra["search_request"] = searches
+	return extra
+}
+
 func ExtractOpenAIUsage(input any) ExtractedUsage {
 	mapping := openAIResponseRecord(input)
 	usage := nestedMap(mapping, "usage")
@@ -269,7 +289,10 @@ func ExtractOpenAIUsage(input any) ExtractedUsage {
 	promptDetails := firstNestedMap(usage, "prompt_tokens_details", "promptTokensDetails", "input_tokens_details")
 	completionDetails := firstNestedMap(usage, "completion_tokens_details", "completionTokensDetails", "output_tokens_details")
 	cached := resolveMappedIntOrMinusOne(promptDetails, "cached_tokens")
-	extra := extractRuntimeExtraUsageUnits(usage, promptDetails, completionDetails)
+	extra := withSearchRequests(
+		extractRuntimeExtraUsageUnits(usage, promptDetails, completionDetails),
+		max(conduitWebSearchRequests(usage), conduitWebSearchRequests(mapping)),
+	)
 	// Prompt tokens count cache reads and writes, and completion tokens count
 	// reasoning. The usage convention reports writes as cache_write units and
 	// reasoning outside output.
@@ -359,8 +382,12 @@ func ExtractAnthropicUsage(input any) ExtractedUsage {
 	// bill as cache_write units.
 	inputTokens := withCacheReads(resolveMappedIntOrMinusOne(usage, "input_tokens"), cacheReadTokens)
 	totalTokens := resolveMappedIntOrMinusOne(usage, "total_tokens")
-	extra := extractRuntimeExtraUsageUnits(usage)
-	addIfPositive(extra, "server_tool_use", resolveMappedIntOrMinusOne(usage, "server_tool_use"))
+	// server_tool_use counts each server tool; only web searches bill as
+	// search_request (a web fetch is not a search).
+	extra := withSearchRequests(
+		extractRuntimeExtraUsageUnits(usage),
+		firstMappedInt(nestedMap(usage, "server_tool_use"), "web_search_requests"),
+	)
 	return stripEmptyExtractedUsage(ExtractedUsage{
 		Provider:          stringPtr("anthropic"),
 		ProviderRequestID: nonEmptyString(mapping["id"]),

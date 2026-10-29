@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.0
+
+- Web searches are reported as `search_request` in `ExtraUsageUnits`: `ExtractAnthropicUsage` reads Anthropic's `server_tool_use.web_search_requests` (replacing the raw `server_tool_use` entry), and `ExtractOpenAIUsage` reads `tool_usage.web_search.num_requests`.
+
 ## 0.3.0
 
 - Added usage extraction for OpenAI Responses API responses and streams.
