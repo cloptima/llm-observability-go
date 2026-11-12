@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	PackageVersion            = "0.4.0"
+	PackageVersion            = "0.5.0"
 	SDKEventSchemaVersion     = "cloptima.llm.event.v1"
 	SDKBatchSchemaVersion     = "cloptima.llm.batch.v1"
 	DefaultAPIBaseURL         = "https://api.cloptima.ai"
@@ -118,6 +118,7 @@ type UsageEvent struct {
 	ReasoningTokens       *int
 	CachedInputTokens     *int
 	ExtraUsageUnits       map[string]int
+	AdvisorUsage          []AdvisorUsageEntry
 	CacheHit              *bool
 	VendorReportedCostUSD any
 	StartedAt             *time.Time
@@ -1088,6 +1089,7 @@ func buildEventPayload(
 		"reasoning_tokens":         intPtrToAny(cleanNonNegativeIntPtr(event.ReasoningTokens)),
 		"cached_input_tokens":      intPtrToAny(cleanNonNegativeIntPtr(event.CachedInputTokens)),
 		"extra_usage_units":        emptyMapToNil(cleanUsageMap(event.ExtraUsageUnits)),
+		"advisor_usage":            advisorUsageToAny(event.AdvisorUsage),
 		"cache_hit":                boolPtrToAny(event.CacheHit),
 		"vendor_reported_cost_usd": cleanCostValue(event.VendorReportedCostUSD),
 		"started_at":               timePtrToAny(event.StartedAt),
@@ -2014,6 +2016,13 @@ func floatPtrToAny(value *float64) any {
 	return *value
 }
 
+func advisorUsageToAny(value []AdvisorUsageEntry) any {
+	if len(value) == 0 {
+		return nil
+	}
+	return value
+}
+
 func emptyMapToNil(value map[string]int) any {
 	if len(value) == 0 {
 		return nil
@@ -2129,6 +2138,9 @@ func applyExtractedUsage(event *UsageEvent, extracted ExtractedUsage) {
 		for key, value := range extracted.ExtraUsageUnits {
 			event.ExtraUsageUnits[key] = value
 		}
+	}
+	if len(extracted.AdvisorUsage) > 0 {
+		event.AdvisorUsage = extracted.AdvisorUsage
 	}
 	if extracted.CacheHit != nil {
 		event.CacheHit = Bool(*extracted.CacheHit)

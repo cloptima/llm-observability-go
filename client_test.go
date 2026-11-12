@@ -1230,6 +1230,17 @@ func assertExtractedUsageMatches(t *testing.T, name string, extracted ExtractedU
 			}
 		}
 	}
+	// Round-trip through a generic value so both sides marshal with sorted keys.
+	var gotValue any
+	if len(extracted.AdvisorUsage) > 0 {
+		raw, _ := json.Marshal(extracted.AdvisorUsage)
+		_ = json.Unmarshal(raw, &gotValue)
+	}
+	gotAdvisor, _ := json.Marshal(gotValue)
+	wantAdvisor, _ := json.Marshal(expected["advisor_usage"])
+	if string(gotAdvisor) != string(wantAdvisor) {
+		t.Fatalf("%s: advisor_usage mismatch: got %s, want %s", name, gotAdvisor, wantAdvisor)
+	}
 }
 
 func otlpAttrMap(attributes []any) map[string]map[string]any {

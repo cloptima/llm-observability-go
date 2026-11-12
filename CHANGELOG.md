@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0
+
+- Added Anthropic advisor usage, per advisor model, as `AdvisorUsage`.
+- Added cached audio tokens for Gemini and Vertex AI.
+- Added code-execution container sessions.
+- Cache writes now use the cache lifetime the response reports.
+
 ## 0.4.0
 
 - Web searches are reported as `search_request` in `ExtraUsageUnits`: `ExtractAnthropicUsage` reads Anthropic's `server_tool_use.web_search_requests` (replacing the raw `server_tool_use` entry), and `ExtractOpenAIUsage` reads `tool_usage.web_search.num_requests`.

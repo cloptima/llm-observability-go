@@ -3,6 +3,8 @@ package llmobservability
 import (
 	"encoding/json"
 	"reflect"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -37,10 +39,22 @@ type ExtractedUsage struct {
 	CachedInputTokens     *int
 	LatencyMS             *int
 	ExtraUsageUnits       map[string]int
+	AdvisorUsage          []AdvisorUsageEntry
 	CacheHit              *bool
 	VendorReportedCostUSD any
 	ErrorMessage          *string
 	Metadata              map[string]any
+}
+
+// AdvisorUsageEntry is one advisor model's passes in the usage convention's
+// advisor_usage shape. Anthropic bills them at that model's rates, outside
+// the request's own tokens.
+type AdvisorUsageEntry struct {
+	Model             string         `json:"model"`
+	InputTokens       int            `json:"input_tokens"`
+	OutputTokens      int            `json:"output_tokens"`
+	CachedInputTokens int            `json:"cached_input_tokens,omitempty"`
+	ExtraUsageUnits   map[string]int `json:"extra_usage_units,omitempty"`
 }
 
 type MappedUsageExtractorConfig struct {
@@ -282,6 +296,32 @@ func withSearchRequests(extra map[string]int, searches int) map[string]int {
 	return extra
 }
 
+// conduitContainerSessionUnits reads Conduit's chat completions count of the
+// code-execution container sessions a response started,
+// tool_usage.container_sessions (memory tier to sessions). Each tier is one
+// unit: container_session for the default tier (default, 1g), and
+// container_session_<tier> for a larger one.
+func conduitContainerSessionUnits(extra map[string]int, usage map[string]any) map[string]int {
+	for tier, value := range nestedMap(nestedMap(usage, "tool_usage"), "container_sessions") {
+		sessions := firstMappedInt(map[string]any{"sessions": value}, "sessions")
+		if sessions <= 0 {
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(tier))
+		unit := "container_session"
+		if containerTierPattern.MatchString(name) && name != "1g" {
+			unit += "_" + name
+		}
+		if extra == nil {
+			extra = map[string]int{}
+		}
+		extra[unit] += sessions
+	}
+	return extra
+}
+
+var containerTierPattern = regexp.MustCompile(`^\d+g$`)
+
 func ExtractOpenAIUsage(input any) ExtractedUsage {
 	mapping := openAIResponseRecord(input)
 	usage := nestedMap(mapping, "usage")
@@ -289,10 +329,10 @@ func ExtractOpenAIUsage(input any) ExtractedUsage {
 	promptDetails := firstNestedMap(usage, "prompt_tokens_details", "promptTokensDetails", "input_tokens_details")
 	completionDetails := firstNestedMap(usage, "completion_tokens_details", "completionTokensDetails", "output_tokens_details")
 	cached := resolveMappedIntOrMinusOne(promptDetails, "cached_tokens")
-	extra := withSearchRequests(
-		extractRuntimeExtraUsageUnits(usage, promptDetails, completionDetails),
+	extra := conduitContainerSessionUnits(withSearchRequests(
+		extractRuntimeExtraUsageUnits(usage, promptDetails, completionDetails, servedCacheTTL(mapping)),
 		max(conduitWebSearchRequests(usage), conduitWebSearchRequests(mapping)),
-	)
+	), usage)
 	// Prompt tokens count cache reads and writes, and completion tokens count
 	// reasoning. The usage convention reports writes as cache_write units and
 	// reasoning outside output.
@@ -397,8 +437,42 @@ func ExtractAnthropicUsage(input any) ExtractedUsage {
 		TotalTokens:       deriveTotalTokens(totalTokens, inputTokens, outputTokens),
 		CachedInputTokens: nonNegativeInt(cacheReadTokens),
 		ExtraUsageUnits:   extra,
+		AdvisorUsage:      anthropicAdvisorUsage(usage),
 		CacheHit:          boolIfPositive(cacheReadTokens),
 	})
+}
+
+// anthropicAdvisorUsage sums the advisor passes Anthropic reports in
+// usage.iterations, outside the top-level totals (which count the executor
+// only), per advisor model.
+func anthropicAdvisorUsage(usage map[string]any) []AdvisorUsageEntry {
+	var entries []AdvisorUsageEntry
+	index := map[string]int{}
+	for _, item := range coerceSlice(usage["iterations"]) {
+		record := coerceMap(item)
+		model := nonEmptyString(record["model"])
+		if record["type"] != "advisor_message" || model == nil {
+			continue
+		}
+		measured := ExtractAnthropicUsage(map[string]any{"usage": record})
+		position, seen := index[*model]
+		if !seen {
+			position = len(entries)
+			index[*model] = position
+			entries = append(entries, AdvisorUsageEntry{Model: *model})
+		}
+		entry := &entries[position]
+		entry.InputTokens += valueOrZero(measured.InputTokens)
+		entry.OutputTokens += valueOrZero(measured.OutputTokens)
+		entry.CachedInputTokens += valueOrZero(measured.CachedInputTokens)
+		for unit, count := range measured.ExtraUsageUnits {
+			if entry.ExtraUsageUnits == nil {
+				entry.ExtraUsageUnits = map[string]int{}
+			}
+			entry.ExtraUsageUnits[unit] += count
+		}
+	}
+	return entries
 }
 
 // mergeStreamUsage keeps each usage field's largest value across stream
@@ -474,6 +548,16 @@ func ExtractGeminiUsage(input any) ExtractedUsage {
 	promptDetails := firstNestedValueAsMapOrList(usage, "promptTokensDetails", "prompt_tokens_details", "inputTokensDetails", "input_tokens_details")
 	completionDetails := firstNestedValueAsMapOrList(usage, "candidatesTokensDetails", "candidates_tokens_details", "responseTokensDetails", "response_tokens_details", "outputTokensDetails", "output_tokens_details")
 	cached := firstMappedInt(usage, "cachedContentTokenCount", "cached_content_token_count")
+	extraUsageUnits := extractRuntimeExtraUsageUnits(usage, promptDetails, completionDetails)
+	// The audio inside the cached tokens, which Google bills at its own rate:
+	// the cache details read in the prompt position count it as input audio.
+	cacheDetails := firstNestedValueAsMapOrList(usage, "cacheTokensDetails", "cache_tokens_details")
+	if cachedAudio := extractRuntimeExtraUsageUnits(nil, cacheDetails)["input_audio"]; cachedAudio > 0 {
+		if extraUsageUnits == nil {
+			extraUsageUnits = map[string]int{}
+		}
+		extraUsageUnits["cached_input_audio"] = cachedAudio
+	}
 	return stripEmptyExtractedUsage(ExtractedUsage{
 		Provider:          firstNonEmptyString(mapping["provider"], "gemini"),
 		ProviderRequestID: firstNonEmptyString(mapping["responseId"], mapping["response_id"], mapping["id"], mapping["name"]),
@@ -483,7 +567,7 @@ func ExtractGeminiUsage(input any) ExtractedUsage {
 		TotalTokens:       nonNegativeInt(firstMappedInt(usage, "totalTokenCount", "total_token_count")),
 		ReasoningTokens:   nonNegativeInt(firstMappedInt(usage, "thoughtsTokenCount", "thoughts_token_count", "reasoningTokenCount", "reasoning_token_count")),
 		CachedInputTokens: nonNegativeInt(cached),
-		ExtraUsageUnits:   extractRuntimeExtraUsageUnits(usage, promptDetails, completionDetails),
+		ExtraUsageUnits:   extraUsageUnits,
 		CacheHit:          boolIfPositive(cached),
 	})
 }
@@ -712,6 +796,9 @@ func mergeExtractedUsage(base ExtractedUsage, override ExtractedUsage) Extracted
 		for key, value := range override.ExtraUsageUnits {
 			base.ExtraUsageUnits[key] = value
 		}
+	}
+	if len(override.AdvisorUsage) > 0 {
+		base.AdvisorUsage = override.AdvisorUsage
 	}
 	if len(override.Metadata) > 0 {
 		if base.Metadata == nil {
@@ -1011,46 +1098,96 @@ func firstMappedInt(mapping map[string]any, keys ...string) int {
 	return -1
 }
 
+// cacheWriteSplits are the fields that split cache writes by lifetime (a
+// count and s, m, h or d), each with the pattern that names its TTL, in
+// precedence order: Anthropic cache_creation.ephemeral_<ttl>_input_tokens,
+// Conduit cached_write_token_details.cached_write_tokens_<ttl>, OpenAI
+// cache_write_tokens_details.ttl_<ttl>_tokens, and flat
+// cache_creation_input_tokens_<ttl> or cache_write_input_tokens_<ttl>.
+var cacheWriteSplits = []struct {
+	inUsage bool
+	detail  string
+	pattern *regexp.Regexp
+}{
+	{true, "cache_creation", regexp.MustCompile(`^ephemeral_(\d+[smhd])_input_tokens$`)},
+	{false, "cached_write_token_details", regexp.MustCompile(`^cached_write_tokens_(\d+[smhd])$`)},
+	{false, "cache_write_tokens_details", regexp.MustCompile(`^ttl_(\d+[smhd])_tokens$`)},
+	{true, "", regexp.MustCompile(`^cache_(?:creation|write)_input_tokens_(\d+[smhd])$`)},
+	{false, "", regexp.MustCompile(`^cache_(?:creation|write)_input_tokens_(\d+[smhd])$`)},
+}
+
+var cacheTTLPattern = regexp.MustCompile(`^\d+[smhd]$`)
+
+// servedCacheTTL is the lifetime a response says it cached at: the
+// Responses API echoes the request's prompt_cache_options.
+func servedCacheTTL(record map[string]any) string {
+	ttl, _ := nestedMap(record, "prompt_cache_options")["ttl"].(string)
+	if cacheTTLPattern.MatchString(ttl) {
+		return ttl
+	}
+	return ""
+}
+
 // cacheWriteUsageUnits reports cache writes as Cloptima bills them:
-// cache_write_5m and cache_write_1h when the response splits them by TTL,
-// and cache_write for any total it does not split. Anthropic reports
-// cache_creation_input_tokens and cache_creation.ephemeral_*; Bedrock
-// reports cacheWriteInputTokens; OpenAI-compatible APIs report
-// cache_write_tokens (or cached_write_tokens and cached_write_token_details)
+// cache_write_<ttl> for each lifetime the response splits out, and the rest
+// of the total at the lifetime the response says it cached at, else as
+// cache_write (the default lifetime). Anthropic reports
+// cache_creation_input_tokens; Bedrock reports cacheWriteInputTokens;
+// OpenAI-compatible APIs report cache_write_tokens (or cached_write_tokens)
 // in the prompt details.
-func cacheWriteUsageUnits(usage map[string]any, promptDetails map[string]any) map[string]int {
-	creation := nestedMap(usage, "cache_creation")
-	writeDetails := nestedMap(promptDetails, "cached_write_token_details")
-	ttl := func(suffix string, ephemeral string, detail string) int {
-		for _, value := range []int{
-			firstMappedInt(creation, ephemeral),
-			firstMappedInt(writeDetails, detail),
-			firstMappedInt(usage, "cache_creation_input_tokens_"+suffix, "cache_write_input_tokens_"+suffix),
-			firstMappedInt(promptDetails, "cache_creation_input_tokens_"+suffix, "cache_write_input_tokens_"+suffix),
-		} {
-			if value > 0 {
-				return value
+func cacheWriteUsageUnits(usage map[string]any, promptDetails map[string]any, servedTTL string) map[string]int {
+	result := map[string]int{}
+	for _, split := range cacheWriteSplits {
+		source := promptDetails
+		if split.inUsage {
+			source = usage
+		}
+		if split.detail != "" {
+			source = nestedMap(source, split.detail)
+		}
+		keys := make([]string, 0, len(source))
+		for key := range source {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			match := split.pattern.FindStringSubmatch(key)
+			if match == nil {
+				continue
+			}
+			name := "cache_write_" + match[1]
+			if _, seen := result[name]; seen {
+				continue
+			}
+			if count := firstMappedInt(source, key); count > 0 {
+				result[name] = count
 			}
 		}
-		return 0
 	}
-	fiveMinutes := ttl("5m", "ephemeral_5m_input_tokens", "cached_write_tokens_5m")
-	oneHour := ttl("1h", "ephemeral_1h_input_tokens", "cached_write_tokens_1h")
+	split := cacheWriteTotal(result)
 	total := firstMappedInt(usage, "cache_creation_input_tokens", "cacheCreationInputTokens", "cache_write_input_tokens", "cacheWriteInputTokens")
 	if total <= 0 {
 		total = firstMappedInt(promptDetails, "cache_write_tokens", "cached_write_tokens", "cache_creation_input_tokens", "cache_write_input_tokens")
 	}
-	result := map[string]int{}
-	for key, value := range map[string]int{"cache_write_5m": fiveMinutes, "cache_write_1h": oneHour, "cache_write": total - fiveMinutes - oneHour} {
-		if value > 0 {
-			result[key] = value
+	if total > split {
+		rest := "cache_write"
+		if servedTTL != "" {
+			rest = "cache_write_" + servedTTL
 		}
+		result[rest] += total - split
 	}
 	return result
 }
 
+// cacheWriteTotal is the cache-write units in usage, every lifetime.
 func cacheWriteTotal(extra map[string]int) int {
-	return extra["cache_write"] + extra["cache_write_5m"] + extra["cache_write_1h"]
+	total := 0
+	for key, value := range extra {
+		if key == "cache_write" || strings.HasPrefix(key, "cache_write_") {
+			total += value
+		}
+	}
+	return total
 }
 
 // withCacheReads counts cache reads in input, as Cloptima bills them:
@@ -1065,13 +1202,18 @@ func withCacheReads(inputTokens int, cacheReadTokens int) int {
 func extractRuntimeExtraUsageUnits(values ...any) map[string]int {
 	result := map[string]int{}
 	var usage, promptDetails map[string]any
+	var servedTTL string
 	if len(values) > 0 {
 		usage, _ = values[0].(map[string]any)
 	}
 	if len(values) > 1 {
 		promptDetails, _ = values[1].(map[string]any)
 	}
-	for key, value := range cacheWriteUsageUnits(usage, promptDetails) {
+	// A fourth value, when given, is the lifetime the response cached at.
+	if len(values) > 3 {
+		servedTTL, _ = values[3].(string)
+	}
+	for key, value := range cacheWriteUsageUnits(usage, promptDetails, servedTTL) {
 		result[key] = value
 	}
 	for index, value := range values {

@@ -119,6 +119,78 @@
     }
   },
   {
+    "name": "openai_responses_cache_write_ttl_usage",
+    "provider": "openai",
+    "kind": "response",
+    "payload": {
+      "id": "resp_fixture_cache_write_ttl",
+      "object": "response",
+      "model": "gpt-5.6-sol",
+      "status": "completed",
+      "usage": {
+        "input_tokens": 3000,
+        "output_tokens": 10,
+        "total_tokens": 3010,
+        "input_tokens_details": {
+          "cached_tokens": 500,
+          "cache_write_tokens": 1500,
+          "cache_write_tokens_details": {
+            "ttl_30m_tokens": 1000,
+            "ttl_12h_tokens": 500
+          }
+        }
+      }
+    },
+    "expected": {
+      "provider": "openai",
+      "provider_request_id": "resp_fixture_cache_write_ttl",
+      "model": "gpt-5.6-sol",
+      "input_tokens": 1500,
+      "output_tokens": 10,
+      "total_tokens": 3010,
+      "cached_input_tokens": 500,
+      "extra_usage_units": {
+        "cache_write_30m": 1000,
+        "cache_write_12h": 500
+      },
+      "cache_hit": true
+    }
+  },
+  {
+    "name": "openai_responses_cache_write_served_ttl_usage",
+    "provider": "openai",
+    "kind": "response",
+    "payload": {
+      "id": "resp_fixture_cache_write_served_ttl",
+      "object": "response",
+      "model": "gpt-5.6-sol",
+      "status": "completed",
+      "prompt_cache_options": {
+        "mode": "implicit",
+        "ttl": "12h"
+      },
+      "usage": {
+        "input_tokens": 2000,
+        "output_tokens": 5,
+        "total_tokens": 2005,
+        "input_tokens_details": {
+          "cache_write_tokens": 800
+        }
+      }
+    },
+    "expected": {
+      "provider": "openai",
+      "provider_request_id": "resp_fixture_cache_write_served_ttl",
+      "model": "gpt-5.6-sol",
+      "input_tokens": 1200,
+      "output_tokens": 5,
+      "total_tokens": 2005,
+      "extra_usage_units": {
+        "cache_write_12h": 800
+      }
+    }
+  },
+  {
     "name": "xai_chat_reasoning_outside_completion_usage",
     "provider": "openai",
     "kind": "response",
@@ -687,6 +759,80 @@
     }
   },
   {
+    "name": "gemini_cached_audio_usage_metadata",
+    "provider": "gemini",
+    "kind": "response",
+    "payload": {
+      "responseId": "gemini-fixture-cached-audio-response",
+      "modelVersion": "gemini-3-flash-preview",
+      "usageMetadata": {
+        "promptTokenCount": 10000,
+        "candidatesTokenCount": 100,
+        "totalTokenCount": 10100,
+        "cachedContentTokenCount": 6000,
+        "promptTokensDetails": [
+          { "modality": "TEXT", "tokenCount": 5000 },
+          { "modality": "AUDIO", "tokenCount": 5000 }
+        ],
+        "cacheTokensDetails": [
+          { "modality": "TEXT", "tokenCount": 2000 },
+          { "modality": "AUDIO", "tokenCount": 4000 }
+        ]
+      }
+    },
+    "expected": {
+      "provider": "gemini",
+      "provider_request_id": "gemini-fixture-cached-audio-response",
+      "model": "gemini-3-flash-preview",
+      "input_tokens": 10000,
+      "output_tokens": 100,
+      "total_tokens": 10100,
+      "cached_input_tokens": 6000,
+      "cache_hit": true,
+      "extra_usage_units": {
+        "input_audio": 5000,
+        "cached_input_audio": 4000
+      }
+    }
+  },
+  {
+    "name": "vertex_cached_audio_usage_metadata",
+    "provider": "vertex_ai",
+    "kind": "response",
+    "payload": {
+      "response_id": "vertex-fixture-cached-audio-response",
+      "model_version": "gemini-3.1-flash-lite",
+      "usage_metadata": {
+        "prompt_token_count": 10000,
+        "candidates_token_count": 100,
+        "total_token_count": 10100,
+        "cached_content_token_count": 6000,
+        "prompt_tokens_details": [
+          { "modality": "TEXT", "token_count": 5000 },
+          { "modality": "AUDIO", "token_count": 5000 }
+        ],
+        "cache_tokens_details": [
+          { "modality": "TEXT", "token_count": 2000 },
+          { "modality": "AUDIO", "token_count": 4000 }
+        ]
+      }
+    },
+    "expected": {
+      "provider": "vertex_ai",
+      "provider_request_id": "vertex-fixture-cached-audio-response",
+      "model": "gemini-3.1-flash-lite",
+      "input_tokens": 10000,
+      "output_tokens": 100,
+      "total_tokens": 10100,
+      "cached_input_tokens": 6000,
+      "cache_hit": true,
+      "extra_usage_units": {
+        "input_audio": 5000,
+        "cached_input_audio": 4000
+      }
+    }
+  },
+  {
     "name": "bedrock_multimodal_response_usage",
     "provider": "bedrock",
     "kind": "response",
@@ -874,6 +1020,238 @@
       "output_tokens": 6,
       "total_tokens": 26,
       "extra_usage_units": { "search_request": 1 }
+    }
+  },
+  {
+    "name": "conduit_chat_container_session_usage",
+    "provider": "openai",
+    "kind": "response",
+    "payload": {
+      "id": "chatcmpl-fixture-conduit-containers",
+      "model": "claude-sonnet-4-6",
+      "usage": {
+        "prompt_tokens": 60,
+        "completion_tokens": 14,
+        "total_tokens": 74,
+        "tool_usage": { "container_sessions": { "default": 1, "16g": 2 } }
+      }
+    },
+    "expected": {
+      "provider": "openai",
+      "provider_request_id": "chatcmpl-fixture-conduit-containers",
+      "model": "claude-sonnet-4-6",
+      "input_tokens": 60,
+      "output_tokens": 14,
+      "total_tokens": 74,
+      "extra_usage_units": { "container_session": 1, "container_session_16g": 2 }
+    }
+  },
+  {
+    "name": "anthropic_advisor_usage",
+    "provider": "anthropic",
+    "kind": "response",
+    "payload": {
+      "id": "msg-fixture-anthropic-advisor",
+      "model": "claude-sonnet-5-5",
+      "usage": {
+        "input_tokens": 900,
+        "output_tokens": 120,
+        "cache_read_input_tokens": 100,
+        "cache_creation_input_tokens": 0,
+        "iterations": [
+          {
+            "type": "message",
+            "input_tokens": 400,
+            "output_tokens": 40,
+            "cache_read_input_tokens": 100,
+            "cache_creation_input_tokens": 0
+          },
+          {
+            "type": "advisor_message",
+            "model": "claude-opus-5-5",
+            "input_tokens": 823,
+            "output_tokens": 1612,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 1200,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 1200,
+              "ephemeral_1h_input_tokens": 0
+            }
+          },
+          {
+            "type": "message",
+            "input_tokens": 500,
+            "output_tokens": 80,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0
+          },
+          {
+            "type": "advisor_message",
+            "model": "claude-opus-5-5",
+            "input_tokens": 300,
+            "output_tokens": 700,
+            "cache_read_input_tokens": 1200,
+            "cache_creation_input_tokens": 0
+          }
+        ]
+      }
+    },
+    "expected": {
+      "provider": "anthropic",
+      "provider_request_id": "msg-fixture-anthropic-advisor",
+      "model": "claude-sonnet-5-5",
+      "input_tokens": 1000,
+      "output_tokens": 120,
+      "total_tokens": 1120,
+      "cached_input_tokens": 100,
+      "cache_hit": true,
+      "advisor_usage": [
+        {
+          "model": "claude-opus-5-5",
+          "input_tokens": 2323,
+          "output_tokens": 2312,
+          "cached_input_tokens": 1200,
+          "extra_usage_units": {
+            "cache_write_5m": 1200
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "anthropic_stream_advisor_usage",
+    "provider": "anthropic",
+    "kind": "stream",
+    "payload": [
+      {
+        "type": "message_start",
+        "message": {
+          "id": "msg-fixture-anthropic-advisor-stream",
+          "model": "claude-sonnet-5-5",
+          "usage": {
+            "input_tokens": 400,
+            "output_tokens": 1,
+            "cache_read_input_tokens": 100,
+            "cache_creation_input_tokens": 0
+          }
+        }
+      },
+      {
+        "type": "content_block_start",
+        "index": 1,
+        "content_block": {
+          "type": "server_tool_use",
+          "id": "srvtoolu_1",
+          "name": "advisor",
+          "input": {}
+        }
+      },
+      {
+        "type": "message_delta",
+        "delta": {},
+        "usage": {
+          "input_tokens": 400,
+          "output_tokens": 40,
+          "cache_read_input_tokens": 100,
+          "iterations": [
+            {
+              "type": "message",
+              "input_tokens": 400,
+              "output_tokens": 40,
+              "cache_read_input_tokens": 100,
+              "cache_creation_input_tokens": 0
+            },
+            {
+              "type": "advisor_message",
+              "model": "claude-opus-5-5",
+              "input_tokens": 823,
+              "output_tokens": 1612,
+              "cache_read_input_tokens": 0,
+              "cache_creation_input_tokens": 1200,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 1200,
+                "ephemeral_1h_input_tokens": 0
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "content_block_delta",
+        "index": 3,
+        "delta": {
+          "type": "text_delta",
+          "text": "done"
+        }
+      },
+      {
+        "type": "message_delta",
+        "delta": {
+          "stop_reason": "end_turn"
+        },
+        "usage": {
+          "input_tokens": 900,
+          "output_tokens": 120,
+          "cache_read_input_tokens": 100,
+          "iterations": [
+            {
+              "type": "message",
+              "input_tokens": 400,
+              "output_tokens": 40,
+              "cache_read_input_tokens": 100,
+              "cache_creation_input_tokens": 0
+            },
+            {
+              "type": "advisor_message",
+              "model": "claude-opus-5-5",
+              "input_tokens": 823,
+              "output_tokens": 1612,
+              "cache_read_input_tokens": 0,
+              "cache_creation_input_tokens": 1200,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 1200,
+                "ephemeral_1h_input_tokens": 0
+              }
+            },
+            {
+              "type": "message",
+              "input_tokens": 500,
+              "output_tokens": 80,
+              "cache_read_input_tokens": 0,
+              "cache_creation_input_tokens": 0
+            },
+            {
+              "type": "advisor_message",
+              "model": "claude-opus-5-5",
+              "input_tokens": 300,
+              "output_tokens": 700,
+              "cache_read_input_tokens": 1200,
+              "cache_creation_input_tokens": 0
+            }
+          ]
+        }
+      }
+    ],
+    "expected": {
+      "provider": "anthropic",
+      "provider_request_id": "msg-fixture-anthropic-advisor-stream",
+      "model": "claude-sonnet-5-5",
+      "input_tokens": 1000,
+      "output_tokens": 120,
+      "total_tokens": 1120,
+      "cached_input_tokens": 100,
+      "cache_hit": true,
+      "advisor_usage": [
+        {
+          "model": "claude-opus-5-5",
+          "input_tokens": 2323,
+          "output_tokens": 2312,
+          "cached_input_tokens": 1200,
+          "extra_usage_units": {
+            "cache_write_5m": 1200
+          }
+        }
+      ]
     }
   }
 ]
