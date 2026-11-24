@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -594,13 +595,8 @@ func TestObserveStreamRecordsSuccess(t *testing.T) {
 			}
 			return nil
 		},
-		ExtractUsage: func(chunks []string) ExtractedUsage {
-			if len(chunks) != 2 {
-				t.Fatalf("expected buffered chunks")
-			}
-			return ExtractedUsage{OutputTokens: Int(2)}
-		},
-		FireAndForget: Bool(false),
+		UsageAccumulator: func() StreamUsageAccumulator { return &countingUsage{} },
+		FireAndForget:    Bool(false),
 	}, func(chunk string) error {
 		seen = append(seen, chunk)
 		return nil
@@ -611,8 +607,8 @@ func TestObserveStreamRecordsSuccess(t *testing.T) {
 	if len(seen) != 2 {
 		t.Fatalf("expected 2 chunks")
 	}
-	if body["status"] != "succeeded" {
-		t.Fatalf("expected succeeded event")
+	if body["status"] != "succeeded" || body["output_tokens"] != float64(2) {
+		t.Fatalf("expected succeeded event with every chunk folded, got %v", body)
 	}
 	metadata := body["metadata"].(map[string]any)
 	if metadata["streamed"] != true {
@@ -633,15 +629,15 @@ func TestObserveStreamReportsTheProviderTheCallerNames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}
-	// ExtractOpenAIStreamUsage labels every OpenAI-compatible stream openai.
+	// The OpenAI accumulator labels every OpenAI-compatible stream openai.
 	err = ObserveStream(context.Background(), client, ObserveStreamOptions[map[string]any]{
 		Provider: "openrouter",
 		Model:    "openai/gpt-4o-mini",
 		Call: func(emit func(map[string]any) error) error {
 			return emit(map[string]any{"id": "or-1", "usage": map[string]any{"prompt_tokens": 2, "completion_tokens": 3}})
 		},
-		ExtractUsage:  func(chunks []map[string]any) ExtractedUsage { return ExtractOpenAIStreamUsage(chunks) },
-		FireAndForget: Bool(false),
+		UsageAccumulator: NewOpenAIStreamUsageAccumulator,
+		FireAndForget:    Bool(false),
 	}, func(map[string]any) error { return nil })
 	if err != nil {
 		t.Fatalf("observe stream: %v", err)
@@ -1273,5 +1269,207 @@ func assertExpectedIntPtr(t *testing.T, name string, field string, actual *int, 
 	value := int(expected.(float64))
 	if actual == nil || *actual != value {
 		t.Fatalf("%s: %s mismatch: %#v", name, field, actual)
+	}
+}
+
+// countingUsage reports how many chunks it folded as output tokens.
+type countingUsage struct{ adds int }
+
+func (c *countingUsage) Add(any) { c.adds++ }
+
+func (c *countingUsage) Result() ExtractedUsage { return ExtractedUsage{OutputTokens: Int(c.adds)} }
+
+type panickingUsage struct {
+	adds        int
+	panicOnAdd  int
+	panicResult bool
+}
+
+func (p *panickingUsage) Add(any) {
+	p.adds++
+	if p.adds == p.panicOnAdd {
+		panic("accumulator broke")
+	}
+}
+
+func (p *panickingUsage) Result() ExtractedUsage {
+	if p.panicResult {
+		panic("result broke")
+	}
+	return ExtractedUsage{InputTokens: Int(9)}
+}
+
+func TestStreamFixtureReplayFoldsEveryChunkThroughOneBindingPerProvider(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "llm-observability-fixtures", "provider_usage_replay.json"))
+	if err != nil {
+		t.Fatalf("read fixtures: %v", err)
+	}
+	var fixtures []map[string]any
+	if err := json.Unmarshal(raw, &fixtures); err != nil {
+		t.Fatalf("unmarshal fixtures: %v", err)
+	}
+	var bodies []map[string]any
+	client, err := NewClient(Config{
+		APIBaseURL:         "https://sdk-ingest.example.cloptima.ai",
+		APIKey:             "pat",
+		DefaultAttribution: Attribution{AppID: "agent-api", Environment: "dev"},
+		HTTPClient: fakeHTTPClient{do: func(r *http.Request) (*http.Response, error) {
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			bodies = append(bodies, body)
+			return jsonResponse(http.StatusAccepted), nil
+		}},
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	bindings := map[string]func(func(func(any) error) error, func(any) error, *ObserveStreamOptions[any]) error{}
+	longStream := false
+	for _, fixture := range fixtures {
+		if fixture["kind"] != "stream" {
+			continue
+		}
+		name := fixture["name"].(string)
+		provider := fixture["provider"].(string)
+		payload := fixture["payload"].([]any)
+		longStream = longStream || len(payload) > 256
+		if bindings[provider] == nil {
+			bindings[provider] = CreateObservedStream(context.Background(), client, ObserveStreamOptions[any]{
+				Provider:         provider,
+				Model:            "fixture-model",
+				UsageAccumulator: GetProviderStreamUsageAccumulator(provider),
+				FireAndForget:    Bool(false),
+			})
+		}
+		delivered := 0
+		err := bindings[provider](func(emit func(any) error) error {
+			for _, chunk := range payload {
+				if err := emit(chunk); err != nil {
+					return err
+				}
+			}
+			return nil
+		}, func(any) error {
+			delivered++
+			return nil
+		}, nil)
+		if err != nil || delivered != len(payload) {
+			t.Fatalf("%s: delivered %d of %d chunks, err %v", name, delivered, len(payload), err)
+		}
+		body := bodies[len(bodies)-1]
+		for key, value := range fixture["expected"].(map[string]any) {
+			if !reflect.DeepEqual(body[key], value) {
+				t.Fatalf("%s: %s = %#v, want %#v", name, key, body[key], value)
+			}
+		}
+	}
+	// A stream longer than the old 256-chunk buffer must keep its first chunk's usage.
+	if !longStream {
+		t.Fatal("corpus has no stream longer than 256 chunks")
+	}
+}
+
+func TestObserveStreamDeliversEveryChunkWhenTheUsageAccumulatorPanics(t *testing.T) {
+	cases := map[string]struct {
+		factory func() StreamUsageAccumulator
+		message string
+	}{
+		"add":     {func() StreamUsageAccumulator { return &panickingUsage{panicOnAdd: 2} }, "accumulator broke"},
+		"factory": {func() StreamUsageAccumulator { panic("factory broke") }, "factory broke"},
+		"result":  {func() StreamUsageAccumulator { return &panickingUsage{panicResult: true} }, "result broke"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			var body map[string]any
+			var observed []error
+			client, err := NewClient(Config{
+				APIBaseURL:         "https://sdk-ingest.example.cloptima.ai",
+				APIKey:             "pat",
+				DefaultAttribution: Attribution{AppID: "agent-api", Environment: "dev"},
+				OnError:            func(err error) { observed = append(observed, err) },
+				HTTPClient: fakeHTTPClient{do: func(r *http.Request) (*http.Response, error) {
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Fatalf("decode body: %v", err)
+					}
+					return jsonResponse(http.StatusAccepted), nil
+				}},
+			})
+			if err != nil {
+				t.Fatalf("new client: %v", err)
+			}
+			var accumulator *panickingUsage
+			var seen []string
+			err = ObserveStream(context.Background(), client, ObserveStreamOptions[string]{
+				Provider: "openai",
+				Model:    "gpt-4o-mini",
+				Call: func(emit func(string) error) error {
+					for _, chunk := range []string{"chunk-1", "chunk-2", "chunk-3"} {
+						if err := emit(chunk); err != nil {
+							return err
+						}
+					}
+					return nil
+				},
+				UsageAccumulator: func() StreamUsageAccumulator {
+					created := tc.factory()
+					accumulator, _ = created.(*panickingUsage)
+					return created
+				},
+				FireAndForget: Bool(false),
+			}, func(chunk string) error {
+				seen = append(seen, chunk)
+				return nil
+			})
+			if err != nil || len(seen) != 3 {
+				t.Fatalf("stream interrupted: seen %v, err %v", seen, err)
+			}
+			if len(observed) != 1 || !strings.Contains(observed[0].Error(), tc.message) {
+				t.Fatalf("error hook got %v, want one %q", observed, tc.message)
+			}
+			if body["status"] != "succeeded" || body["input_tokens"] != nil {
+				t.Fatalf("event = %v, want succeeded without usage", body)
+			}
+			if name == "add" && accumulator.adds != 2 {
+				t.Fatalf("accumulator kept running after its panic: %d adds", accumulator.adds)
+			}
+		})
+	}
+}
+
+func TestObserveStreamKeepsDeliveringChunksWhenTheErrorHookPanics(t *testing.T) {
+	client, err := NewClient(Config{
+		APIBaseURL:         "https://sdk-ingest.example.cloptima.ai",
+		APIKey:             "pat",
+		DefaultAttribution: Attribution{AppID: "agent-api", Environment: "dev"},
+		OnError:            func(error) { panic("hook broke") },
+		HTTPClient: fakeHTTPClient{do: func(*http.Request) (*http.Response, error) {
+			return jsonResponse(http.StatusAccepted), nil
+		}},
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	var seen []string
+	err = ObserveStream(context.Background(), client, ObserveStreamOptions[string]{
+		Provider: "openai",
+		Model:    "gpt-4o-mini",
+		Call: func(emit func(string) error) error {
+			for _, chunk := range []string{"chunk-1", "chunk-2"} {
+				if err := emit(chunk); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		UsageAccumulator: func() StreamUsageAccumulator { return &panickingUsage{panicOnAdd: 1} },
+		FireAndForget:    Bool(false),
+	}, func(chunk string) error {
+		seen = append(seen, chunk)
+		return nil
+	})
+	if err != nil || len(seen) != 2 {
+		t.Fatalf("stream interrupted: seen %v, err %v", seen, err)
 	}
 }

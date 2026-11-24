@@ -11,11 +11,19 @@ import (
 
 type UsageExtractor func(any) ExtractedUsage
 
+// StreamUsageAccumulator folds a stream's usage one chunk at a time, so no
+// chunk has to be kept.
+type StreamUsageAccumulator interface {
+	Add(chunk any)
+	Result() ExtractedUsage
+}
+
 type ProviderUsageExtractorDescriptor struct {
-	Provider          string
-	Aliases           []string
-	ResponseExtractor UsageExtractor
-	StreamExtractor   UsageExtractor
+	Provider                  string
+	Aliases                   []string
+	ResponseExtractor         UsageExtractor
+	StreamExtractor           UsageExtractor
+	NewStreamUsageAccumulator func() StreamUsageAccumulator
 }
 
 type ProviderSupportMatrixEntry struct {
@@ -79,44 +87,46 @@ type ExtractedUsageDefaults struct {
 
 var providerUsageExtractors = []ProviderUsageExtractorDescriptor{
 	{
-		Provider:          "openai",
-		Aliases:           []string{"openai"},
-		ResponseExtractor: ExtractOpenAIUsage,
-		StreamExtractor:   ExtractOpenAIStreamUsage,
+		Provider:                  "openai",
+		Aliases:                   []string{"openai"},
+		ResponseExtractor:         ExtractOpenAIUsage,
+		StreamExtractor:           ExtractOpenAIStreamUsage,
+		NewStreamUsageAccumulator: NewOpenAIStreamUsageAccumulator,
 	},
 	{
-		Provider:          "azure",
-		Aliases:           []string{"azure"},
-		ResponseExtractor: ExtractAzureUsage,
-		StreamExtractor: func(input any) ExtractedUsage {
-			extracted := ExtractOpenAIStreamUsage(input)
-			extracted.Provider = stringPtr("azure")
-			return extracted
-		},
+		Provider:                  "azure",
+		Aliases:                   []string{"azure"},
+		ResponseExtractor:         ExtractAzureUsage,
+		StreamExtractor:           func(input any) ExtractedUsage { return foldStreamUsage(newAzureStreamUsageAccumulator, input) },
+		NewStreamUsageAccumulator: newAzureStreamUsageAccumulator,
 	},
 	{
-		Provider:          "anthropic",
-		Aliases:           []string{"anthropic"},
-		ResponseExtractor: ExtractAnthropicUsage,
-		StreamExtractor:   ExtractAnthropicStreamUsage,
+		Provider:                  "anthropic",
+		Aliases:                   []string{"anthropic"},
+		ResponseExtractor:         ExtractAnthropicUsage,
+		StreamExtractor:           ExtractAnthropicStreamUsage,
+		NewStreamUsageAccumulator: NewAnthropicStreamUsageAccumulator,
 	},
 	{
-		Provider:          "gemini",
-		Aliases:           []string{"gemini"},
-		ResponseExtractor: ExtractGeminiUsage,
-		StreamExtractor:   ExtractGeminiStreamUsage,
+		Provider:                  "gemini",
+		Aliases:                   []string{"gemini"},
+		ResponseExtractor:         ExtractGeminiUsage,
+		StreamExtractor:           ExtractGeminiStreamUsage,
+		NewStreamUsageAccumulator: NewGeminiStreamUsageAccumulator,
 	},
 	{
-		Provider:          "vertex_ai",
-		Aliases:           []string{"vertex_ai", "vertex-ai", "vertex"},
-		ResponseExtractor: ExtractVertexUsage,
-		StreamExtractor:   ExtractVertexStreamUsage,
+		Provider:                  "vertex_ai",
+		Aliases:                   []string{"vertex_ai", "vertex-ai", "vertex"},
+		ResponseExtractor:         ExtractVertexUsage,
+		StreamExtractor:           ExtractVertexStreamUsage,
+		NewStreamUsageAccumulator: NewVertexStreamUsageAccumulator,
 	},
 	{
-		Provider:          "bedrock",
-		Aliases:           []string{"bedrock"},
-		ResponseExtractor: ExtractBedrockUsage,
-		StreamExtractor:   ExtractBedrockStreamUsage,
+		Provider:                  "bedrock",
+		Aliases:                   []string{"bedrock"},
+		ResponseExtractor:         ExtractBedrockUsage,
+		StreamExtractor:           ExtractBedrockStreamUsage,
+		NewStreamUsageAccumulator: NewBedrockStreamUsageAccumulator,
 	},
 }
 
@@ -140,11 +150,23 @@ func ProviderSupportMatrix() []ProviderSupportMatrixEntry {
 }
 
 func GetProviderUsageExtractor(provider string) UsageExtractor {
-	return getProviderExtractor(provider, false)
+	return findProviderUsageDescriptor(provider).ResponseExtractor
 }
 
 func GetProviderStreamUsageExtractor(provider string) UsageExtractor {
-	return getProviderExtractor(provider, true)
+	return findProviderUsageDescriptor(provider).StreamExtractor
+}
+
+func GetProviderStreamUsageAccumulator(provider string) func() StreamUsageAccumulator {
+	return findProviderUsageDescriptor(provider).NewStreamUsageAccumulator
+}
+
+func foldStreamUsage(newAccumulator func() StreamUsageAccumulator, input any) ExtractedUsage {
+	accumulator := newAccumulator()
+	for _, chunk := range coerceSlice(input) {
+		accumulator.Add(chunk)
+	}
+	return accumulator.Result()
 }
 
 func ListSupportedProviders() []ProviderSupportMatrixEntry {
@@ -366,41 +388,66 @@ func ExtractOpenAIUsage(input any) ExtractedUsage {
 	return stripEmptyExtractedUsage(result)
 }
 
-func ExtractOpenAIStreamUsage(input any) ExtractedUsage {
-	chunks := coerceSlice(input)
-	var lastID *string
-	var lastModel *string
-	var usageChunk map[string]any
-	for _, chunk := range chunks {
-		record := openAIResponseRecord(chunk)
-		if len(record) == 0 {
-			continue
-		}
-		if value := nonEmptyString(record["id"]); value != nil {
-			lastID = value
-		}
-		if value := nonEmptyString(record["model"]); value != nil {
-			lastModel = value
-		}
-		if len(nestedMap(record, "usage")) > 0 {
-			usageChunk = record
-		}
+type openAIStreamUsageAccumulator struct {
+	lastID     *string
+	lastModel  *string
+	usageChunk map[string]any
+}
+
+func NewOpenAIStreamUsageAccumulator() StreamUsageAccumulator {
+	return &openAIStreamUsageAccumulator{}
+}
+
+func (a *openAIStreamUsageAccumulator) Add(chunk any) {
+	record := openAIResponseRecord(chunk)
+	if len(record) == 0 {
+		return
 	}
-	if len(usageChunk) == 0 {
+	if value := nonEmptyString(record["id"]); value != nil {
+		a.lastID = value
+	}
+	if value := nonEmptyString(record["model"]); value != nil {
+		a.lastModel = value
+	}
+	if len(nestedMap(record, "usage")) > 0 {
+		a.usageChunk = record
+	}
+}
+
+func (a *openAIStreamUsageAccumulator) Result() ExtractedUsage {
+	if len(a.usageChunk) == 0 {
 		return stripEmptyExtractedUsage(ExtractedUsage{
 			Provider:          stringPtr("openai"),
-			ProviderRequestID: lastID,
-			Model:             lastModel,
+			ProviderRequestID: a.lastID,
+			Model:             a.lastModel,
 		})
 	}
-	extracted := ExtractOpenAIUsage(usageChunk)
+	extracted := ExtractOpenAIUsage(a.usageChunk)
 	if extracted.ProviderRequestID == nil {
-		extracted.ProviderRequestID = lastID
+		extracted.ProviderRequestID = a.lastID
 	}
 	if extracted.Model == nil {
-		extracted.Model = lastModel
+		extracted.Model = a.lastModel
 	}
 	return stripEmptyExtractedUsage(extracted)
+}
+
+func ExtractOpenAIStreamUsage(input any) ExtractedUsage {
+	return foldStreamUsage(NewOpenAIStreamUsageAccumulator, input)
+}
+
+type azureStreamUsageAccumulator struct {
+	openAIStreamUsageAccumulator
+}
+
+func newAzureStreamUsageAccumulator() StreamUsageAccumulator {
+	return &azureStreamUsageAccumulator{}
+}
+
+func (a *azureStreamUsageAccumulator) Result() ExtractedUsage {
+	extracted := a.openAIStreamUsageAccumulator.Result()
+	extracted.Provider = stringPtr("azure")
+	return extracted
 }
 
 func ExtractAzureUsage(input any) ExtractedUsage {
@@ -513,33 +560,45 @@ func isUsageNumber(value any) bool {
 	return false
 }
 
-func ExtractAnthropicStreamUsage(input any) ExtractedUsage {
-	var messageID *string
-	var model *string
-	var usage map[string]any
-	for _, chunk := range coerceSlice(input) {
-		record := coerceMap(chunk)
-		if len(record) == 0 {
-			continue
-		}
-		source := record
-		if message := nestedMap(record, "message"); len(message) > 0 {
-			if value := nonEmptyString(message["id"]); value != nil {
-				messageID = value
-			}
-			if value := nonEmptyString(message["model"]); value != nil {
-				model = value
-			}
-			source = message
-		}
-		if chunkUsage := nestedMap(source, "usage"); len(chunkUsage) > 0 {
-			usage = mergeStreamUsage(usage, chunkUsage)
-		}
+type anthropicStreamUsageAccumulator struct {
+	messageID *string
+	model     *string
+	usage     map[string]any
+}
+
+func NewAnthropicStreamUsageAccumulator() StreamUsageAccumulator {
+	return &anthropicStreamUsageAccumulator{}
+}
+
+func (a *anthropicStreamUsageAccumulator) Add(chunk any) {
+	record := coerceMap(chunk)
+	if len(record) == 0 {
+		return
 	}
-	extracted := ExtractAnthropicUsage(map[string]any{"usage": usage})
-	extracted.ProviderRequestID = messageID
-	extracted.Model = model
+	source := record
+	if message := nestedMap(record, "message"); len(message) > 0 {
+		if value := nonEmptyString(message["id"]); value != nil {
+			a.messageID = value
+		}
+		if value := nonEmptyString(message["model"]); value != nil {
+			a.model = value
+		}
+		source = message
+	}
+	if chunkUsage := nestedMap(source, "usage"); len(chunkUsage) > 0 {
+		a.usage = mergeStreamUsage(a.usage, chunkUsage)
+	}
+}
+
+func (a *anthropicStreamUsageAccumulator) Result() ExtractedUsage {
+	extracted := ExtractAnthropicUsage(map[string]any{"usage": a.usage})
+	extracted.ProviderRequestID = a.messageID
+	extracted.Model = a.model
 	return stripEmptyExtractedUsage(extracted)
+}
+
+func ExtractAnthropicStreamUsage(input any) ExtractedUsage {
+	return foldStreamUsage(NewAnthropicStreamUsageAccumulator, input)
 }
 
 func ExtractGeminiUsage(input any) ExtractedUsage {
@@ -578,47 +637,70 @@ func ExtractVertexUsage(input any) ExtractedUsage {
 	return stripEmptyExtractedUsage(extracted)
 }
 
-func ExtractGeminiStreamUsage(input any) ExtractedUsage {
-	chunks := coerceSlice(input)
-	var lastID *string
-	var lastModel *string
-	var usageChunk map[string]any
-	for _, chunk := range chunks {
-		record := coerceMap(chunk)
-		if len(record) == 0 {
-			continue
-		}
-		if value := firstNonEmptyString(record["responseId"], record["response_id"], record["id"], record["name"]); value != nil {
-			lastID = value
-		}
-		if value := firstNonEmptyString(record["modelVersion"], record["model_version"], record["model"]); value != nil {
-			lastModel = value
-		}
-		if len(firstNestedMap(record, "usageMetadata", "usage_metadata")) > 0 {
-			usageChunk = record
-		}
+type geminiStreamUsageAccumulator struct {
+	lastID     *string
+	lastModel  *string
+	usageChunk map[string]any
+}
+
+func NewGeminiStreamUsageAccumulator() StreamUsageAccumulator {
+	return &geminiStreamUsageAccumulator{}
+}
+
+func (a *geminiStreamUsageAccumulator) Add(chunk any) {
+	record := coerceMap(chunk)
+	if len(record) == 0 {
+		return
 	}
-	if len(usageChunk) == 0 {
+	if value := firstNonEmptyString(record["responseId"], record["response_id"], record["id"], record["name"]); value != nil {
+		a.lastID = value
+	}
+	if value := firstNonEmptyString(record["modelVersion"], record["model_version"], record["model"]); value != nil {
+		a.lastModel = value
+	}
+	if len(firstNestedMap(record, "usageMetadata", "usage_metadata")) > 0 {
+		a.usageChunk = record
+	}
+}
+
+func (a *geminiStreamUsageAccumulator) Result() ExtractedUsage {
+	if len(a.usageChunk) == 0 {
 		return stripEmptyExtractedUsage(ExtractedUsage{
 			Provider:          stringPtr("gemini"),
-			ProviderRequestID: lastID,
-			Model:             lastModel,
+			ProviderRequestID: a.lastID,
+			Model:             a.lastModel,
 		})
 	}
-	extracted := ExtractGeminiUsage(usageChunk)
+	extracted := ExtractGeminiUsage(a.usageChunk)
 	if extracted.ProviderRequestID == nil {
-		extracted.ProviderRequestID = lastID
+		extracted.ProviderRequestID = a.lastID
 	}
 	if extracted.Model == nil {
-		extracted.Model = lastModel
+		extracted.Model = a.lastModel
 	}
 	return stripEmptyExtractedUsage(extracted)
 }
 
-func ExtractVertexStreamUsage(input any) ExtractedUsage {
-	extracted := ExtractGeminiStreamUsage(input)
+func ExtractGeminiStreamUsage(input any) ExtractedUsage {
+	return foldStreamUsage(NewGeminiStreamUsageAccumulator, input)
+}
+
+type vertexStreamUsageAccumulator struct {
+	geminiStreamUsageAccumulator
+}
+
+func NewVertexStreamUsageAccumulator() StreamUsageAccumulator {
+	return &vertexStreamUsageAccumulator{}
+}
+
+func (a *vertexStreamUsageAccumulator) Result() ExtractedUsage {
+	extracted := a.geminiStreamUsageAccumulator.Result()
 	extracted.Provider = stringPtr("vertex_ai")
 	return stripEmptyExtractedUsage(extracted)
+}
+
+func ExtractVertexStreamUsage(input any) ExtractedUsage {
+	return foldStreamUsage(NewVertexStreamUsageAccumulator, input)
 }
 
 func ExtractBedrockUsage(input any) ExtractedUsage {
@@ -643,79 +725,91 @@ func ExtractBedrockUsage(input any) ExtractedUsage {
 	})
 }
 
-func ExtractBedrockStreamUsage(input any) ExtractedUsage {
-	chunks := coerceSlice(input)
-	var requestID *string
-	var model *string
-	inputTokens, outputTokens, totalTokens, cacheReadTokens := -1, -1, -1, -1
-	lastInputTokens, lastOutputTokens, lastCacheReadTokens := -1, -1, -1
-	extra := map[string]int{}
-	lastExtra := map[string]int{}
-	sawUsage := false
-	for _, chunk := range chunks {
-		record := coerceMap(chunk)
-		if len(record) == 0 {
-			continue
-		}
-		if value := firstNonEmptyString(record["requestId"], record["request_id"]); value != nil {
-			requestID = value
-		}
-		if value := firstNonEmptyString(record["modelId"], record["model_id"], record["model"]); value != nil {
-			model = value
-		}
-		usage := nestedMap(record, "usage")
-		if len(usage) == 0 {
-			continue
-		}
-		inputCount := firstMappedInt(usage, "inputTokens", "input_tokens")
-		outputCount := firstMappedInt(usage, "outputTokens", "output_tokens")
-		totalCount := firstMappedInt(usage, "totalTokens", "total_tokens")
-		promptDetails := firstNestedValueAsMapOrList(usage, "promptTokensDetails", "prompt_tokens_details", "inputTokensDetails", "input_tokens_details")
-		completionDetails := firstNestedValueAsMapOrList(usage, "completionTokensDetails", "completion_tokens_details", "outputTokensDetails", "output_tokens_details")
-		chunkExtra := extractRuntimeExtraUsageUnits(usage, promptDetails, completionDetails)
-		inputTokens, lastInputTokens = accumulateStreamingCounter(inputTokens, lastInputTokens, inputCount)
-		outputTokens, lastOutputTokens = accumulateStreamingCounter(outputTokens, lastOutputTokens, outputCount)
-		cacheReadTokens, lastCacheReadTokens = accumulateStreamingCounter(cacheReadTokens, lastCacheReadTokens, firstMappedInt(usage, "cacheReadInputTokens", "cache_read_input_tokens"))
-		if inputCount >= 0 || outputCount >= 0 || len(chunkExtra) > 0 {
-			sawUsage = true
-		}
-		accumulateStreamingUsageMap(extra, lastExtra, chunkExtra)
-		if totalCount >= 0 {
-			totalTokens = totalCount
-		}
+type bedrockStreamUsageAccumulator struct {
+	requestID                                               *string
+	model                                                   *string
+	inputTokens, outputTokens, totalTokens, cacheReadTokens int
+	lastInputTokens, lastOutputTokens, lastCacheReadTokens  int
+	extra, lastExtra                                        map[string]int
+	sawUsage                                                bool
+}
+
+func NewBedrockStreamUsageAccumulator() StreamUsageAccumulator {
+	return &bedrockStreamUsageAccumulator{
+		inputTokens: -1, outputTokens: -1, totalTokens: -1, cacheReadTokens: -1,
+		lastInputTokens: -1, lastOutputTokens: -1, lastCacheReadTokens: -1,
+		extra: map[string]int{}, lastExtra: map[string]int{},
 	}
-	if !sawUsage {
+}
+
+func (a *bedrockStreamUsageAccumulator) Add(chunk any) {
+	record := coerceMap(chunk)
+	if len(record) == 0 {
+		return
+	}
+	if value := firstNonEmptyString(record["requestId"], record["request_id"]); value != nil {
+		a.requestID = value
+	}
+	if value := firstNonEmptyString(record["modelId"], record["model_id"], record["model"]); value != nil {
+		a.model = value
+	}
+	usage := nestedMap(record, "usage")
+	if len(usage) == 0 {
+		return
+	}
+	inputCount := firstMappedInt(usage, "inputTokens", "input_tokens")
+	outputCount := firstMappedInt(usage, "outputTokens", "output_tokens")
+	totalCount := firstMappedInt(usage, "totalTokens", "total_tokens")
+	promptDetails := firstNestedValueAsMapOrList(usage, "promptTokensDetails", "prompt_tokens_details", "inputTokensDetails", "input_tokens_details")
+	completionDetails := firstNestedValueAsMapOrList(usage, "completionTokensDetails", "completion_tokens_details", "outputTokensDetails", "output_tokens_details")
+	chunkExtra := extractRuntimeExtraUsageUnits(usage, promptDetails, completionDetails)
+	a.inputTokens, a.lastInputTokens = accumulateStreamingCounter(a.inputTokens, a.lastInputTokens, inputCount)
+	a.outputTokens, a.lastOutputTokens = accumulateStreamingCounter(a.outputTokens, a.lastOutputTokens, outputCount)
+	a.cacheReadTokens, a.lastCacheReadTokens = accumulateStreamingCounter(a.cacheReadTokens, a.lastCacheReadTokens, firstMappedInt(usage, "cacheReadInputTokens", "cache_read_input_tokens"))
+	if inputCount >= 0 || outputCount >= 0 || len(chunkExtra) > 0 {
+		a.sawUsage = true
+	}
+	accumulateStreamingUsageMap(a.extra, a.lastExtra, chunkExtra)
+	if totalCount >= 0 {
+		a.totalTokens = totalCount
+	}
+}
+
+func (a *bedrockStreamUsageAccumulator) Result() ExtractedUsage {
+	cacheReadTokens := a.cacheReadTokens
+	if !a.sawUsage {
 		cacheReadTokens = -1
 	}
 	return stripEmptyExtractedUsage(ExtractedUsage{
 		Provider:          stringPtr("bedrock"),
-		ProviderRequestID: requestID,
-		Model:             model,
-		InputTokens:       nonNegativeIntIf(sawUsage, withCacheReads(inputTokens, cacheReadTokens)),
-		OutputTokens:      nonNegativeIntIf(sawUsage, outputTokens),
-		TotalTokens:       deriveTotalTokensIf(sawUsage, totalTokens, withCacheReads(inputTokens, cacheReadTokens), outputTokens),
-		CachedInputTokens: nonNegativeIntIf(sawUsage, cacheReadTokens),
+		ProviderRequestID: a.requestID,
+		Model:             a.model,
+		InputTokens:       nonNegativeIntIf(a.sawUsage, withCacheReads(a.inputTokens, cacheReadTokens)),
+		OutputTokens:      nonNegativeIntIf(a.sawUsage, a.outputTokens),
+		TotalTokens:       deriveTotalTokensIf(a.sawUsage, a.totalTokens, withCacheReads(a.inputTokens, cacheReadTokens), a.outputTokens),
+		CachedInputTokens: nonNegativeIntIf(a.sawUsage, cacheReadTokens),
 		CacheHit:          boolIfPositive(cacheReadTokens),
-		ExtraUsageUnits:   emptyUsageMapToNil(extra),
+		ExtraUsageUnits:   emptyUsageMapToNil(a.extra),
 	})
 }
 
-func getProviderExtractor(provider string, stream bool) UsageExtractor {
+func ExtractBedrockStreamUsage(input any) ExtractedUsage {
+	return foldStreamUsage(NewBedrockStreamUsageAccumulator, input)
+}
+
+func findProviderUsageDescriptor(provider string) ProviderUsageExtractorDescriptor {
 	lowered := strings.ToLower(strings.TrimSpace(provider))
 	if lowered == "" {
-		return nil
+		return ProviderUsageExtractorDescriptor{}
 	}
 	for _, descriptor := range providerUsageExtractors {
 		for _, alias := range descriptor.Aliases {
 			if lowered == alias {
-				if stream {
-					return descriptor.StreamExtractor
-				}
-				return descriptor.ResponseExtractor
+				return descriptor
 			}
 		}
 	}
-	return nil
+	return ProviderUsageExtractorDescriptor{}
 }
 
 func safeExtract(extractor UsageExtractor, input any) (result ExtractedUsage) {

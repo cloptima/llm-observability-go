@@ -309,11 +309,7 @@ func InstrumentOpenAICompatibleResponse(ctx context.Context, client Client, resp
 func InstrumentOpenAICompatibleStream(ctx context.Context, client Client, chunks any, options TransportRequestOptions) error {
 	extractor := ExtractOpenAIStreamUsage
 	if normalizeOpenAICompatibleProvider(options.Provider) == "azure" {
-		extractor = func(input any) ExtractedUsage {
-			extracted := ExtractOpenAIStreamUsage(input)
-			extracted.Provider = stringPtr("azure")
-			return extracted
-		}
+		extractor = GetProviderStreamUsageExtractor("azure")
 	}
 	event := UsageEvent{
 		Provider:    fallbackString(options.Provider, "openai"),

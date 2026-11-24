@@ -3,22 +3,22 @@ package llmobservability
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 )
 
 type ObserveStreamOptions[T any] struct {
-	Provider          string
-	Model             string
-	Call              func(func(T) error) error
-	ExtractUsage      func([]T) ExtractedUsage
-	Attribution       Attribution
-	Agent             AgentContext
-	Metadata          map[string]any
-	MetadataPrivacy   *MetadataPrivacyOptions
-	RequestID         string
-	TraceID           string
-	FireAndForget     *bool
-	MaxBufferedChunks int
+	Provider         string
+	Model            string
+	Call             func(func(T) error) error
+	UsageAccumulator func() StreamUsageAccumulator
+	Attribution      Attribution
+	Agent            AgentContext
+	Metadata         map[string]any
+	MetadataPrivacy  *MetadataPrivacyOptions
+	RequestID        string
+	TraceID          string
+	FireAndForget    *bool
 }
 
 func ObserveStream[T any](ctx context.Context, client Client, options ObserveStreamOptions[T], onChunk func(T) error) error {
@@ -28,23 +28,29 @@ func ObserveStream[T any](ctx context.Context, client Client, options ObserveStr
 	if onChunk == nil {
 		return errors.New("onChunk is required")
 	}
-	maxBuffered := options.MaxBufferedChunks
-	if maxBuffered <= 0 {
-		maxBuffered = 256
+	// Telemetry never breaks the stream: the first accumulator panic stops
+	// accumulation and goes to the error hook, and the event carries no usage.
+	var accumulator StreamUsageAccumulator
+	guardUsage := func(step func()) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				accumulator = nil
+				defer func() { _ = recover() }() // The stream outranks the caller's error hook.
+				reportObserveError(client, fmt.Errorf("usage accumulator panicked: %v", recovered))
+			}
+		}()
+		step()
 	}
-	buffer := make([]T, 0, maxBuffered)
+	if options.UsageAccumulator != nil {
+		guardUsage(func() { accumulator = options.UsageAccumulator() })
+	}
 	emittedChunks := 0
 	started := time.Now().UTC()
 	startedMonotonic := time.Now()
 	emit := func(chunk T) error {
 		emittedChunks++
-		if options.ExtractUsage != nil {
-			if len(buffer) == maxBuffered {
-				copy(buffer, buffer[1:])
-				buffer[len(buffer)-1] = chunk
-			} else {
-				buffer = append(buffer, chunk)
-			}
+		if accumulator != nil {
+			guardUsage(func() { accumulator.Add(chunk) })
 		}
 		return onChunk(chunk)
 	}
@@ -72,8 +78,8 @@ func ObserveStream[T any](ctx context.Context, client Client, options ObserveStr
 		event.Metadata = map[string]any{}
 	}
 	event.Metadata["streamed"] = true
-	if options.ExtractUsage != nil && err == nil {
-		applyExtractedUsage(&event, options.ExtractUsage(buffer))
+	if accumulator != nil && err == nil {
+		guardUsage(func() { applyExtractedUsage(&event, accumulator.Result()) })
 	}
 	if err != nil {
 		if emittedChunks > 0 {
@@ -169,8 +175,8 @@ func mergeObserveStreamOptions[T any](base ObserveStreamOptions[T], override Obs
 	if override.Model != "" {
 		base.Model = override.Model
 	}
-	if override.ExtractUsage != nil {
-		base.ExtractUsage = override.ExtractUsage
+	if override.UsageAccumulator != nil {
+		base.UsageAccumulator = override.UsageAccumulator
 	}
 	base.Attribution = mergeAttribution(base.Attribution, override.Attribution)
 	base.Agent = mergeAgentContext(base.Agent, override.Agent)
@@ -186,9 +192,6 @@ func mergeObserveStreamOptions[T any](base ObserveStreamOptions[T], override Obs
 	}
 	if override.FireAndForget != nil {
 		base.FireAndForget = Bool(*override.FireAndForget)
-	}
-	if override.MaxBufferedChunks > 0 {
-		base.MaxBufferedChunks = override.MaxBufferedChunks
 	}
 	return base
 }
